@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Run one Psi4 1.11 + OEPDev job in the current directory.
+#   usage: psi4-oepdev-run INPUT [NTHREADS] [MEMORY_BYTES]
+#   extra arguments for a *.py script: PSI4OEP_SCRIPT_ARGS="--methods cis --dimer"
+# INPUT: Python script (*.py, psiapi; may 'import oepdev') or a Psithon input (any other extension;
+#        Psithon may contain Python, e.g. 'import oepdev').
+# Defaults: threads from SLURM_CPUS_PER_TASK/SLURM_CPUS_ON_NODE (else nproc),
+#           memory = 90% of SLURM_MEM_PER_NODE (else 4 GB).
+#
+# Threads and memory are LOCKED to these values: 'memory ...' lines in Psithon and
+# psi4.set_num_threads()/psi4.set_memory() calls inside the input are ignored (with a note on stderr),
+# so old inputs with hard-coded values (e.g. set_num_threads(4)) use the whole allocation.
+# Set PSI4OEP_HONOR_INPUT=1 to let the input file decide instead.
+# Called by qjob apps/psi4oep.sh (copy of ~/bin/psi4-oepdev-run).
+set -uo pipefail
+
+input_file=$1
+input_name=${input_file%.*}
+ext=${input_file##*.}
+nthreads=${2:-${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}}}
+if [ -n "${3:-}" ]; then mem=$3
+elif [ -n "${SLURM_MEM_PER_NODE:-}" ]; then mem=$(( SLURM_MEM_PER_NODE * 1024 * 1024 * 9 / 10 ))
+else mem=$(( 4 * 1024 * 1024 * 1024 )); fi
+
+mem=$(( mem / 1048576 * 1048576 ))      # whole MiB, so that every way of passing it gives the same value
+
+env_file=${PSI4_OEPDEV_ENV:-$HOME/PD/opt/psi4/psi4-oepdev-1.11.sh}
+[ -f "$env_file" ] || env_file=/home/rgora/PD/opt/psi4/psi4-oepdev-1.11.sh     # shared installation (group parvata)
+[ -f "$env_file" ] || { echo "ERROR: $env_file not found (build psi4+oepdev first)" >&2; exit 1; }
+# the environment file (conda activate, psi4 --psiapi) is not written for 'set -u'
+set +u
+# shellcheck disable=SC1090
+source "$env_file"
+set -u
+
+# Threading: psi4 sets OpenMP threads (omp_set_num_threads); OpenBLAS (OpenMP variant) and Eigen
+# follow it, so BLAS calls inside OEPDev run on all threads.
+export OMP_NUM_THREADS=$nthreads
+unset OPENBLAS_NUM_THREADS MKL_NUM_THREADS GOTO_NUM_THREADS
+export PSI_SCRATCH=${TMPDIR:-${PSI_SCRATCH:-/tmp}}
+
+# sitecustomize.py is imported by Python at start-up, i.e. before the input file runs
+site=$(mktemp -d "${PSI_SCRATCH}/psi4oep_site.XXXXXX")
+trap 'rm -rf "$site"' EXIT
+cat > "$site/sitecustomize.py" <<'PYEOF'
+import os, sys
+try:
+    import psi4
+    _n = int(os.environ["PSI4OEP_NTHREADS"])
+    _m = int(os.environ["PSI4OEP_MEMORY"])
+    psi4.core.set_num_threads(_n, quiet=True)
+    psi4.core.set_memory_bytes(_m, quiet=True)
+    if os.environ.get("PSI4OEP_HONOR_INPUT", "0") != "1":
+        _orig_set_memory = psi4.driver.p4util.util.set_memory
+        def _note(what):
+            sys.stderr.write("psi4-oepdev-run: ignoring %s from the input; using %d threads, %d MiB\n"
+                             % (what, _n, _m // 2**20))
+        def _threads(n, quiet=False):
+            if int(n) != _n:
+                _note("set_num_threads(%s)" % n)
+        def _mem_py(inputval, execute=True, quiet=False):
+            if not execute:                      # unit conversion only
+                return _orig_set_memory(inputval, execute=False)
+            if _orig_set_memory(inputval, execute=False) != _m:
+                _note("set_memory(%r)" % (inputval,))
+            return _m
+        def _mem_bytes(b, quiet=False):
+            if int(b) != _m:
+                _note("memory %d MiB" % (int(b) // 2**20))
+        psi4.core.set_num_threads = _threads
+        psi4.core.set_memory_bytes = _mem_bytes
+        psi4.set_num_threads = _threads
+        for _mod in (psi4, psi4.driver, psi4.driver.p4util, psi4.driver.p4util.util):
+            if hasattr(_mod, "set_memory"):
+                _mod.set_memory = _mem_py
+except Exception as e:                           # never block the job because of this helper
+    sys.stderr.write("psi4-oepdev-run: sitecustomize warning: %r\n" % (e,))
+PYEOF
+export PYTHONPATH="$site${PYTHONPATH:+:$PYTHONPATH}"
+export PSI4OEP_NTHREADS=$nthreads PSI4OEP_MEMORY=$mem
+
+echo "psi4-oepdev-run: input=$input_file threads=$nthreads memory=$(( mem / 1024 / 1024 )) MiB scratch=$PSI_SCRATCH"
+echo "  $(command -v psi4)  ($(psi4 --version 2>/dev/null))"
+if [ "${PSI4OEP_HONOR_INPUT:-0}" = 1 ]; then
+  echo "  PSI4OEP_HONOR_INPUT=1: memory/threads set in the input file take precedence"
+fi
+
+# A *.py file that contains Psithon blocks (set {...}, molecule {...}, memory ...) is run by the psi4 driver
+if [ "$ext" = py ] && grep -qE '^[[:space:]]*(set|molecule|basis|memory)([[:space:]]|\{|$)' "$input_file"; then
+  echo "  NOTE: $input_file contains Psithon syntax - running it with 'psi4' (output: $input_name.out)"
+  ext=psithon
+fi
+
+case "$ext" in
+  py)
+    # extra script arguments (qjob --args), shell-quoted string
+    eval "script_args=(${PSI4OEP_SCRIPT_ARGS:-})"
+    python "$input_file" "${script_args[@]}"
+    status=$?
+    ;;
+  *)
+    [ -f "$input_name.out" ] && mv -f "$input_name.out" "$input_name.out.old"
+    psi4 -n "$nthreads" --memory "$(( mem / 1048576 )) mib" -s "$PSI_SCRATCH" --loglevel 30 -i "$input_file" -o "$input_name.out"
+    status=$?
+    ;;
+esac
+echo "psi4-oepdev-run: exit status $status"
+exit $status

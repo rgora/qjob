@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Psi4oep - submit Psi4 + OEPDev jobs to Slurm (qjob). 'Psi4oep -h' for options.
+QJOB_CMD=$(basename "$0") exec "$(dirname "$(readlink -f "$0")")/../lib/qjob.sh" psi4oep "$@"
