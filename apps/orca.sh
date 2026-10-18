@@ -4,7 +4,7 @@
 APP_SYNOPSIS="input.inp [input2.inp ...]"
 APP_TASKS=mpi
 cores=32 memory=200 storage=shm:400g time_limit=72
-copy_back="%b.gbw *.hess %b.cis %b.*.nto %b.densities %b.densitiesinfo *.txt *spectrum* *.xyz"
+copy_back="%b.gbw *.hess *hess.root* %b.cis %b.*.nto %b.densities %b.densitiesinfo *.txt *spectrum* *.xyz"
 
 ORCA_MODULE=ORCA                  # module load ORCA[/<version>]
 ORCA_COPY_EXT="gbw xyz hess oin mp2nat loc"   # copied from the input dir to TMPDIR
