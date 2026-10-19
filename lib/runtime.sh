@@ -18,9 +18,12 @@ qjob_copy() {          # qjob_copy FROM TO "patterns"   (globs expand in FROM)
 }
 
 qjob_main() {
-    [ -f /usr/local/sbin/modules.sh ] && source /usr/local/sbin/modules.sh
-    if ! type module >/dev/null 2>&1 && [ -r /etc/profile.d/lmod.sh ]; then
-        source /etc/profile.d/lmod.sh
+    if ! type module >/dev/null 2>&1; then
+        if [ -r /usr/local/sbin/modules.sh ]; then
+            source /usr/local/sbin/modules.sh
+        elif [ -r /etc/profile.d/lmod.sh ]; then
+            source /etc/profile.d/lmod.sh
+        fi
     fi
     if [ -n "$QJOB_MODULEPATH" ]; then
         module use "$QJOB_MODULEPATH" || exit 1
