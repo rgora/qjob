@@ -1,25 +1,43 @@
 # qjob — zadania Slurm i lokalne obliczenia w tle
 
+Wspólny kod uruchamiania aplikacji z konfiguracją zależną od miejsca pracy:
+Slurm na WCSS i lokalnym klastrze, a na laptopie obliczenia bez kolejki,
+również w tle. Obecna adaptacja i testy dotyczą przede wszystkim ORCA.
+
+## Gałęzie i zgodność z WCSS
+
+- `main` jest dotychczasową wersją używaną na WCSS. Zmiany opisane poniżej nie
+  zostały do niej scalone; aktualizacja checkoutu `main` ich nie pobiera.
+- `site/shared-orca` zawiera wspólną wersję dla WCSS, bohr, bose, ligol i macOS.
+  Z tej samej gałęzi korzystają instalacje w `/opt/qjob` na trzech serwerach
+  oraz prywatna instalacja na Macu. Różnice między maszynami są w konfiguracji.
+
+Gałąź `site/shared-orca` zachowuje ustawienia WCSS, gdy nie ma konfiguracji site.
+Są one również dostępne jawnie przez `QJOB_PROFILE=wcss`. To nie zmienia
+istniejącej instalacji WCSS; migracja na tę gałąź jest osobnym, świadomym krokiem.
+
+## Budowa pakietu
+
 Małe, samodzielne środowisko w trzech warstwach:
 
 ```
 qjob/
-├── bin/Orca, Turbomole, QChem, Psi4oep  wrappery (1 linia)
+├── bin/Orca, Turbomole, QChem, Psi4oep  wrappery poleceń
 ├── lib/qjob.sh      opcje, nagłówek #SBATCH, sbatch            (wspólne)
 ├── lib/runtime.sh   kod wykonywany w zadaniu: prolog, copy/copy-back, epilog
 ├── apps/<app>.sh    domyślne zasoby, opcje specyficzne, ciało zadania app_run()
 └── libexec/psi4-oepdev-run   uruchamianie Psi4+OEPDev (kopia ~/bin/psi4-oepdev-run)
 ```
 
-Instalacja na klastrze:
+Dotychczasowa instalacja indywidualna na WCSS (`main`):
 
 ```bash
-git clone https://github.com/rgora/qjob.git ~/bin/qjob
+git clone --branch main https://github.com/rgora/qjob.git ~/bin/qjob
 export PATH=$HOME/bin/qjob/bin:$PATH        # w ~/.bashrc, przed ~/bin
 # albo dowiązania: ln -s ~/bin/qjob/bin/Orca ~/bin/Orca  (itd.)
 ```
 
-Aktualizacja: `git -C ~/bin/qjob pull`.
+Aktualizacja tej instalacji: `git -C ~/bin/qjob pull --ff-only`.
 
 ## Użycie
 
@@ -38,9 +56,12 @@ Psi4oep --args "7ac 2.6,3.6,4.6" ref_scan.py   # argumenty skryptu; %c = rdzenie
 
 Opcje wspólne: `-p -n -c -m -t -s/--storage -C/--copy -B/--copy-back
 --clean-tmp --mail --name -w -A -q --reservation --exclusive --gres --slurmopt -v/--version
---local --debug -h`. W `-C/-B` `%b` oznacza nazwę wejścia bez rozszerzenia.
+--local --background --debug -h`. W `-C/-B` `%b` oznacza nazwę wejścia bez rozszerzenia.
 
 ## Co robi każdy program
+
+Poniższe wartości domyślne odnoszą się do profilu WCSS. Konfiguracja site,
+profil lokalny i preferencje użytkownika mogą je zmienić.
 
 | | ORCA | Turbomole | Q-Chem |
 |---|---|---|---|
@@ -58,7 +79,7 @@ Opcje wspólne: `-p -n -c -m -t -s/--storage -C/--copy -B/--copy-back
 (`PSI4OEP_HONOR_INPUT=1` to wyłącza). Wejście `*.py` (psiapi) albo Psithon (`*.in` → `*.out`);
 stdout przebiegu trafia do `<wejście>-<jobid>.log`.
 
-Wspólne dla wszystkich: 300 s przed limitem czasu zadanie dostaje USR1 i kopiuje pliki
+W zadaniach Slurm: 300 s przed limitem czasu zadanie dostaje USR1 i kopiuje pliki
 z `--copy-back` (np. aktualny `.gbw`) do katalogu zadania; potem wykonuje się normalny epilog.
 
 ## Do sprawdzenia na klastrze
@@ -97,8 +118,9 @@ Powtórne uruchomienie zachowuje istniejące pliki konfiguracyjne i poprawne dow
 
 Kolejność ustawień: wartości w kodzie, `/etc/qjob/qjob.conf`, `/etc/qjob/orca.conf`,
 wybrany profil z `profiles/`, `~/.config/qjob/qjob.conf`,
-`~/.config/qjob/orca.conf`, opcje polecenia. Pliki `.conf` są zaufanym kodem Bash, zapisywalnym tylko przez
-administratora. `QJOB_CONFIG_DIR` pozwala wskazać inny katalog, np. przy testowaniu.
+`~/.config/qjob/orca.conf`, opcje polecenia. Pliki `.conf` są zaufanym kodem
+Bash. Pliki w `/etc/qjob` zapisuje administrator; konfigurację w swoim katalogu
+użytkownik utrzymuje sam. `QJOB_CONFIG_DIR` pozwala wskazać inny katalog, np. przy testowaniu.
 Pliki `site/*.conf.example` pokazują dostępne ustawienia. Domyślnie pozostaje
 konfiguracja WCSS, jeśli nie zainstalowano konfiguracji lokalnej.
 
@@ -137,7 +159,17 @@ obsługują ich poprawnie. Sukces wymaga kodu zero oraz komunikatu
 
 Repozytorium w `/opt/qjob` i konfiguracja należą do roota. Zwykli użytkownicy
 uruchamiają `Orca` bez sudo i bez zmieniania PATH. Aktualizacje wykonuje administrator
-przez Git, po sprawdzeniu gałęzi i lokalnych zmian (`sudo git -C /opt/qjob status`).
+przez Git, po sprawdzeniu gałęzi i lokalnych zmian:
+
+```bash
+sudo git -C /opt/qjob status
+sudo git -C /opt/qjob branch --show-current   # site/shared-orca
+sudo git -C /opt/qjob pull --ff-only
+```
+
+Aktualizacja kodu nie nadpisuje `/etc/qjob/*.conf` ani konfiguracji użytkowników.
+Nie należy wykonywać instalacji ani `git pull` jako root w katalogach domowych
+użytkowników.
 
 
 ## Jedno repozytorium, różne środowiska
@@ -164,6 +196,18 @@ zasobów na klastrze egzekwuje Slurm.
 Obsługa ORCA działa z systemowym Bash 3.2 i narzędziami macOS. Nie wymaga GNU
 `getopt`, GNU `sed` ani GNU `readlink`. Obecnie ten zakres przenośności dotyczy
 wrappera `Orca`; pozostałe aplikacje mają własne wymagania środowiskowe.
+
+Instalacja dla pojedynczego użytkownika:
+
+```bash
+mkdir -p ~/.local/share ~/.local/bin ~/.config/qjob
+git clone --branch site/shared-orca https://github.com/rgora/qjob.git ~/.local/share/qjob
+ln -s ~/.local/share/qjob/bin/Orca ~/.local/bin/Orca
+```
+
+Jeśli `~/.local/bin/Orca` już istnieje, przed utworzeniem dowiązania należy zachować
+je jako `Orca.old` (bez nadpisywania wcześniejszej kopii). Katalog `~/.local/bin`
+musi być w `PATH`. Aktualizacja: `git -C ~/.local/share/qjob pull --ff-only`.
 
 Można korzystać z istniejącego modułu. Przykład konfiguracji z tego Maca:
 
@@ -208,3 +252,20 @@ wyników. Brak pliku oznacza, że zakończenie nie zostało jeszcze zapisane (np
 proces nadal działa albo został przerwany). Bez `--background` profil lokalny
 wykonuje zadanie na pierwszym planie. Lokalnie `-m` i `-t` nie ustanawiają limitów
 systemowych; `-m` jest używane do kontroli zadeklarowanego `%maxcore`.
+
+
+## Sprawdzenie instalacji
+
+```bash
+Orca -h
+Orca --debug -c 4 -m 8 water.inp    # skrypt bez wysyłania zadania
+bash /opt/qjob/tests/test_shared_orca.sh
+# instalacja indywidualna:
+# bash ~/.local/share/qjob/tests/test_shared_orca.sh
+```
+
+Test automatyczny korzysta z zastępczego programu ORCA. Sprawdza konfigurację,
+generowanie skryptu, synchronizację `%pal`, prywatny scratch, zachowanie wejścia,
+kopiowanie wyników, obsługę błędów i tryb pracy w tle. Nie zastępuje rzeczywistego
+obliczenia w danym środowisku. Instalację ORCA/MPI należy sprawdzić krótkim zadaniem
+równoległym i potwierdzić `ORCA TERMINATED NORMALLY` w logu.
