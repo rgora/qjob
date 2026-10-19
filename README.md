@@ -1,4 +1,4 @@
-# qjob — minimalne środowisko do wstawiania zadań Slurm (WCSS)
+# qjob — zadania Slurm i lokalne obliczenia w tle
 
 Małe, samodzielne środowisko w trzech warstwach:
 
@@ -97,7 +97,8 @@ już istnieje, jako `Orca.<data>-<pid>.old`. Tworzy dowiązanie do `/opt/qjob/bi
 Powtórne uruchomienie zachowuje istniejące pliki konfiguracyjne i poprawne dowiązanie.
 
 Kolejność ustawień: wartości w kodzie, `/etc/qjob/qjob.conf`, `/etc/qjob/orca.conf`,
-opcje polecenia. Pliki `.conf` są zaufanym kodem Bash, zapisywalnym tylko przez
+wybrany profil z `profiles/`, `~/.config/qjob/qjob.conf`,
+`~/.config/qjob/orca.conf`, opcje polecenia. Pliki `.conf` są zaufanym kodem Bash, zapisywalnym tylko przez
 administratora. `QJOB_CONFIG_DIR` pozwala wskazać inny katalog, np. przy testowaniu.
 Pliki `site/*.conf.example` pokazują dostępne ustawienia. Domyślnie pozostaje
 konfiguracja WCSS, jeśli nie zainstalowano konfiguracji lokalnej.
@@ -138,3 +139,53 @@ obsługują ich poprawnie. Sukces wymaga kodu zero oraz komunikatu
 Repozytorium w `/opt/qjob` i konfiguracja należą do roota. Zwykli użytkownicy
 uruchamiają `Orca` bez sudo i bez zmieniania PATH. Aktualizacje wykonuje administrator
 przez Git, po sprawdzeniu gałęzi i lokalnych zmian (`sudo git -C /opt/qjob status`).
+
+
+## Jedno repozytorium, różne środowiska
+
+Profile i konfiguracja zmieniają zasoby, kolejkę, scratch oraz sposób odnalezienia
+programu. Obsługa wejść i wyników ORCA jest wspólna. Nie są potrzebne osobne gałęzie
+kodu dla WCSS, bohr/bose/ligol i laptopa.
+
+| Środowisko | Wybór ustawień | Uruchamianie |
+|---|---|---|
+| WCSS | domyślnie bez konfiguracji site; jawnie `QJOB_PROFILE=wcss` | `sbatch` |
+| bohr, bose, ligol | `/etc/qjob/*.conf` | `sbatch` |
+| macOS | automatycznie profil `local`, jeśli nie ma konfiguracji site | lokalnie; `--background` w tle |
+| laptop z Linuxem | `QJOB_PROFILE=local` | lokalnie; `--background` w tle |
+
+Profil można wybrać zmienną `QJOB_PROFILE`, np. `QJOB_PROFILE=local Orca water.inp`.
+W katalogu użytkownika respektowane są `XDG_CONFIG_HOME` i `QJOB_USER_CONFIG_DIR`.
+Konfiguracja użytkownika nadpisuje ustawienia profilu, a opcje polecenia mają
+najwyższy priorytet. Te ustawienia są wartościami domyślnymi; limity uprawnień i
+zasobów na klastrze egzekwuje Slurm.
+
+### Mac: natywna ORCA bez Slurma
+
+Obsługa ORCA działa z systemowym Bash 3.2 i narzędziami macOS. Nie wymaga GNU
+`getopt`, GNU `sed` ani GNU `readlink`. Obecnie ten zakres przenośności dotyczy
+wrappera `Orca`; pozostałe aplikacje mają własne wymagania środowiskowe.
+
+W `~/.config/qjob/orca.conf` należy podać istniejącą instalację:
+
+```bash
+ORCA_BINARY=/opt/orca/6.1.1/orca
+```
+
+`ORCA_BINARY` omija ładowanie modułów. ORCA oraz zgodne z nią biblioteki i MPI
+muszą już działać w danym systemie; qjob nie instaluje programu przez wybór profilu.
+Przykładowe preferencje w `~/.config/qjob/qjob.conf`: `cores=2` i `memory=4`.
+
+```bash
+Orca --background -c 2 -m 4 water.inp
+# polecenie od razu wypisuje PID, log przebiegu i ścieżkę do pliku .exit-code
+```
+
+Proces jest uruchamiany przez `nohup`, z odłączonym wejściem i przekierowanymi
+strumieniami. Log obsługi zadania ma nazwę `<wejście>-local.<identyfikator>.log`,
+a log ORCA — `<wejście>-local-<pid>.log`. Po zakończeniu obok logu zadania powstaje
+plik `.exit-code`: `0` oznacza prawidłowe zakończenie obliczenia i kopiowania
+wyników. Brak pliku oznacza, że zakończenie nie zostało jeszcze zapisane (np.
+proces nadal działa albo został przerwany). Bez `--background` profil lokalny
+wykonuje zadanie na pierwszym planie. Lokalnie `-m` i `-t` nie ustanawiają limitów
+systemowych; `-m` jest używane do kontroli zadeklarowanego `%maxcore`.

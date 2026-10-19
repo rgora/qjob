@@ -7,6 +7,7 @@ cores=32 memory=200 storage=shm:400g time_limit=72
 copy_back="%b.gbw *.hess *hess.root* %b.cis %b.*.nto %b.densities %b.densitiesinfo *.txt *spectrum* *.xyz"
 
 ORCA_MODULE=ORCA                  # module load ORCA[/<version>]
+ORCA_BINARY=""                    # explicit native binary; bypasses module loading
 ORCA_MODULE_TEMPLATE=""           # optional full name, e.g. ORCA/%v-gompi-2023b-avx2
 ORCA_PURGE_MODULES=false
 ORCA_BIND_ALLOCATION=false         # restore the cgroup v2 allocation mask before mpirun
@@ -14,7 +15,7 @@ ORCA_COPY_EXT="gbw xyz hess oin mp2nat loc"   # copied from the input dir to TMP
 orca_pal=sync
 
 APP_LONG="pal:"
-APP_VARS="ORCA_MODULE ORCA_MODULE_TEMPLATE ORCA_PURGE_MODULES ORCA_BIND_ALLOCATION ORCA_COPY_EXT orca_pal"
+APP_VARS="ORCA_MODULE ORCA_BINARY ORCA_MODULE_TEMPLATE ORCA_PURGE_MODULES ORCA_BIND_ALLOCATION ORCA_COPY_EXT orca_pal"
 APP_FUNCS="orca_set_pal"
 
 app_usage() {
@@ -57,26 +58,44 @@ app_prepare() {
 
 orca_set_pal() {       # orca_set_pal FILE NPROCS  (edits the TMPDIR copy only)
     local f=$1 np=$2
-    sed -i -E \
-        -e "s/^([[:space:]]*%pal[[:space:]]+nprocs[[:space:]]+)[0-9]+/\1$np/I" \
-        -e "s/^([[:space:]]*nprocs[[:space:]]+)[0-9]+/\1$np/I" \
-        -e "/^[[:space:]]*!/s/(!|[[:space:]])PAL[0-9]+\b/\1/Ig" "$f"
-    if ! grep -qiE '^[[:space:]]*(%pal[[:space:]]+)?nprocs[[:space:]]' "$f"; then
-        if grep -qiE '^[[:space:]]*%pal([[:space:]]|$)' "$f"; then
-            sed -i -E "s/^([[:space:]]*%pal)([[:space:]]|$)/\1 nprocs $np\2/I" "$f"
-        else
-            sed -i "1i %pal nprocs $np end" "$f"
-        fi
-    fi
+    local tmp
+    tmp=$(mktemp "$f.qjob.XXXXXX") || return 1
+    awk -v np="$np" '
+        {
+            line=$0; lower=tolower(line)
+            if (lower ~ /^[[:space:]]*(%pal[[:space:]]+)?nprocs[[:space:]]+[0-9]+/) {
+                sub(/[0-9]+/, np, line); has_np=1
+            }
+            if (lower ~ /^[[:space:]]*%pal([[:space:]]|$)/) pal=NR
+            if (lower ~ /^[[:space:]]*!/) {
+                while (match(line, /(^|[[:space:]])[Pp][Aa][Ll][0-9]+([[:space:]]|$)/))
+                    line=substr(line, 1, RSTART-1) " " substr(line, RSTART+RLENGTH)
+            }
+            lines[NR]=line
+        }
+        END {
+            if (!has_np) {
+                if (pal) sub(/%[Pp][Aa][Ll]/, "& nprocs " np, lines[pal])
+                else print "%pal nprocs " np " end"
+            }
+            for (i=1; i<=NR; i++) print lines[i]
+        }
+    ' "$f" > "$tmp" && mv -- "$tmp" "$f"
+
 }
 
 app_run() {
-    [ "$ORCA_PURGE_MODULES" != true ] || module purge || return 1
-    local orca_module="$ORCA_MODULE${version:+/$version}"
-    [ -z "$ORCA_MODULE_TEMPLATE" ] || orca_module=${ORCA_MODULE_TEMPLATE//%v/$version}
-    module load "$orca_module" || return 1
     local orca_bin cur=$SLURM_SUBMIT_DIR ext f rc
-    orca_bin=$(command -v orca) || { qjob_msg "orca not found after module load"; return 1; }
+    if [ -n "$ORCA_BINARY" ]; then
+        orca_bin=$(command -v -- "$ORCA_BINARY") || { qjob_msg "ORCA binary not found: $ORCA_BINARY"; return 1; }
+    else
+        [ -n "$ORCA_MODULE" ] || { qjob_msg "set ORCA_BINARY to the full path of the native ORCA executable"; return 1; }
+        [ "$ORCA_PURGE_MODULES" != true ] || module purge || return 1
+        local orca_module="$ORCA_MODULE${version:+/$version}"
+        [ -z "$ORCA_MODULE_TEMPLATE" ] || orca_module=${ORCA_MODULE_TEMPLATE//%v/$version}
+        module load "$orca_module" || return 1
+        orca_bin=$(command -v orca) || { qjob_msg "orca not found after module load"; return 1; }
+    fi
     local -a launcher=()
     if [ "$ORCA_BIND_ALLOCATION" = true ] && (( ! run_local )); then
         local cgroup cpus
@@ -100,8 +119,16 @@ app_run() {
     # stderr goes straight to a file (a pipe to sed hung NEB jobs).
     local log=$cur/$base-$QJOB_ID.log logtmp=$TMPDIR/$base-$QJOB_ID.log err=$TMPDIR/$base-$QJOB_ID.err
     qjob_msg "-- running $orca_bin $input"
-    "${launcher[@]}" "$orca_bin" "$input" < /dev/null 2> "$err" | tee --output-error=warn "$logtmp" > "$log"
-    rc=${PIPESTATUS[0]}
+    if tee --help 2>&1 | grep -q -- --output-error; then
+        "${launcher[@]}" "$orca_bin" "$input" < /dev/null 2> "$err" | tee --output-error=warn "$logtmp" > "$log"
+        rc=${PIPESTATUS[0]}
+    else
+        # BSD tee cannot guarantee the scratch copy after a destination error.
+        # Keep the authoritative log in scratch, then copy it after the run.
+        qjob_msg "   live ORCA log: $logtmp"
+        "${launcher[@]}" "$orca_bin" "$input" < /dev/null > "$logtmp" 2> "$err"
+        rc=$?
+    fi
     if ! grep -q 'ORCA TERMINATED NORMALLY' "$logtmp" \
         || grep -qE '^[[:space:]]*ORCA finished by error termination' "$logtmp"; then
         qjob_msg "ERROR: ORCA did not terminate normally; retaining scratch"

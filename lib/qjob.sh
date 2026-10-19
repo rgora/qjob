@@ -14,7 +14,7 @@
 # so no escaping of \$ is needed anywhere; '--debug' prints the complete script.
 # =============================================================================
 
-QJOB_ROOT=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd)
+QJOB_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 QJOB_APP=${1:?usage: qjob.sh <app> [options] inputs}; shift
 QJOB_CMD=${QJOB_CMD:-$QJOB_APP}
 QJOB_ARGS=$(printf '%q ' "$@")
@@ -29,7 +29,7 @@ if id -nG 2>/dev/null | grep -qw plgrid; then partition=plgrid-lem-cpu; else par
 nodes=1 cores=8 memory=16 time_limit=1 storage=shm:40g gres=""
 nodelist="" account="" qos="" mail="" reservation="" exclusive=0 slurmopt=""
 name="" version="" copy="" copy_back="" clean_tmp=false
-debug=0 run_local=0 show_help=0
+debug=0 run_local=0 background=0 show_help=0
 signal_lead=300        # s before the time limit: USR1 -> copy-back of current results
 QJOB_SITE=WCSS
 QJOB_SCRATCH_ROOT="" QJOB_MODULEPATH="" QJOB_STORAGE_GRES=true
@@ -52,9 +52,21 @@ app_run()     { :; }          # job body (runs inside the job)
 # shellcheck source=/dev/null
 source "$QJOB_ROOT/apps/$QJOB_APP.sh"     # may override the defaults above
 
-# Site defaults belong outside the Git checkout. CLI options take precedence.
+# Site defaults belong outside the Git checkout. Named profiles and user
+# preferences can override defaults; the CLI is applied last.
 QJOB_CONFIG_DIR=${QJOB_CONFIG_DIR:-/etc/qjob}
-for config in "$QJOB_CONFIG_DIR/qjob.conf" "$QJOB_CONFIG_DIR/$QJOB_APP.conf"; do
+config_files=("$QJOB_CONFIG_DIR/qjob.conf" "$QJOB_CONFIG_DIR/$QJOB_APP.conf")
+if [ -z "${QJOB_PROFILE:-}" ] && [[ $OSTYPE == darwin* ]] && [ ! -f "$QJOB_CONFIG_DIR/qjob.conf" ]; then
+    QJOB_PROFILE=local
+fi
+if [ -n "${QJOB_PROFILE:-}" ]; then
+    [[ $QJOB_PROFILE =~ ^[a-zA-Z0-9_-]+$ ]] || die "invalid profile name: $QJOB_PROFILE"
+    [ -d "$QJOB_ROOT/profiles/$QJOB_PROFILE" ] || die "unknown profile: $QJOB_PROFILE"
+    config_files+=("$QJOB_ROOT/profiles/$QJOB_PROFILE/qjob.conf" "$QJOB_ROOT/profiles/$QJOB_PROFILE/$QJOB_APP.conf")
+fi
+QJOB_USER_CONFIG_DIR=${QJOB_USER_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/qjob}
+config_files+=("$QJOB_USER_CONFIG_DIR/qjob.conf" "$QJOB_USER_CONFIG_DIR/$QJOB_APP.conf")
+for config in "${config_files[@]}"; do
     if [ -f "$config" ]; then
         [ -r "$config" ] || die "configuration is not readable: $config"
         source "$config" || die "could not load configuration: $config"
@@ -88,6 +100,7 @@ Other
   -v, --version VER        module version                         [${version:-default}]
       --name NAME          job name (default: input file name)
       --local              run here without Slurm (e.g. in an interactive allocation)
+      --background         run locally in the background; print PID and job-log path
       --debug              print the job script, do not submit
   -h, --help
 EOF
@@ -96,16 +109,18 @@ app_usage
 
 # ------------------------------------------------------------ options
 SHORT="+hp:n:c:m:t:s:w:A:q:C:B:v:${APP_SHORT}"
-LONG="help,debug,local,partition:,nodes:,cores:,memory:,time:,storage:,gres:,nodelist:"
+LONG="help,debug,local,background,partition:,nodes:,cores:,memory:,time:,storage:,gres:,nodelist:"
 LONG+=",account:,qos:,reservation:,exclusive,mail:,slurmopt:,copy:,copy-back:,clean-tmp:"
 LONG+=",version:,name:${APP_LONG:+,$APP_LONG}"
-PARSED=$(getopt -o "$SHORT" -l "$LONG" -n "$QJOB_CMD" -- "$@") || { echo "Try '$QJOB_CMD -h'." >&2; exit 2; }
+source "$QJOB_ROOT/lib/options.sh"
+PARSED=$(qjob_parse_options "$SHORT" "$LONG" "$@") || { echo "Try '$QJOB_CMD -h'." >&2; exit 2; }
 eval set -- "$PARSED"
 while :; do
     case $1 in
         -h|--help)      show_help=1; shift ;;
         --debug)        debug=1; shift ;;
         --local)        run_local=1; shift ;;
+        --background)   run_local=1; background=1; shift ;;
         --exclusive)    exclusive=1; shift ;;
         -p|--partition) partition=$2; shift 2 ;;
         -n|--nodes)     nodes=$2; shift 2 ;;
@@ -140,10 +155,11 @@ for v in nodes cores memory; do
     [[ ${!v} =~ ^[1-9][0-9]*$ ]] || die "--$v must be a positive integer (got '${!v}')"
 done
 app_setup
+(( ! run_local || nodes == 1 )) || die "--local runs on one machine only"
 for v in NODES CORES MEMORY; do
     limit_var=QJOB_MAX_$v
     [[ ${!limit_var} =~ ^[0-9]+$ ]] || die "invalid site limit $limit_var"
-    resource=${v,,}
+    resource=$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')
     (( ${!limit_var} == 0 || ${!resource} <= ${!limit_var} )) \
         || die "--$resource exceeds the site limit (${!limit_var})"
 done
@@ -210,11 +226,24 @@ submit() {             # uses $input, $base, cwd
     if (( debug )); then
         printf '%s\n' "$script"
     elif (( run_local )); then
-        local f; f=$(mktemp "${TMPDIR:-/tmp}/qjob.XXXXXX.sh")
+        local f; f=$(mktemp "${TMPDIR:-/tmp}/qjob.XXXXXX") || return 1
         printf '%s\n' "$script" > "$f"
-        bash "$f"; local rc=$?
-        rm -f "$f"; return $rc
+        if (( background )); then
+            local job_log pid
+            job_log=$(mktemp "$PWD/$base-local.XXXXXX") || { rm -f "$f"; return 1; }
+            mv -- "$job_log" "$job_log.log" || { rm -f "$f"; return 1; }
+            job_log=$job_log.log
+            nohup bash -c 'bash "$1"; rc=$?; printf "%s\n" "$rc" > "$2.exit-code"; rm -f -- "$1"; exit "$rc"' \
+                qjob-background "$f" "$job_log" > "$job_log" 2>&1 < /dev/null &
+            pid=$!
+            printf 'Started local job PID %s\nJob log: %s\nExit code: %s.exit-code\n' "$pid" "$job_log" "$job_log"
+        else
+            bash "$f"; local rc=$?
+            rm -f "$f"; return $rc
+        fi
     else
+        command -v sbatch >/dev/null 2>&1 \
+            || { warn "sbatch not found; use --local or QJOB_PROFILE=local"; return 1; }
         printf '%s\n' "${blu}$jobname${end}  $partition  ${nodes}x${cores} cores  ${memory} GB  ${wall}  ${gres_all}" >&2
         printf '%s\n' "$script" | sbatch
     fi

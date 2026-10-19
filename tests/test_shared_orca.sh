@@ -8,6 +8,9 @@ trap 'rm -rf -- "$test_dir"' EXIT
 export QJOB_TEST_DIR=$test_dir
 mkdir -p "$test_dir"/{config,scratch,fake-bin,work}
 export QJOB_CONFIG_DIR=$test_dir/config
+export QJOB_USER_CONFIG_DIR=$test_dir/user-config
+mkdir -p "$QJOB_USER_CONFIG_DIR"
+unset QJOB_PROFILE
 cat > "$QJOB_CONFIG_DIR/qjob.conf" <<CONF
 QJOB_SITE=test
 partition=normal
@@ -30,7 +33,7 @@ export -f module
 cat > "$test_dir/fake-bin/orca" <<'MOCK'
 #!/bin/bash
 printf '%s\n' "$TMPDIR" >> "$QJOB_TEST_DIR/scratch-paths.txt"
-stat -c %a "$TMPDIR" > run-details.txt
+stat -c %a "$TMPDIR" > run-details.txt 2>/dev/null || stat -f %Lp "$TMPDIR" > run-details.txt
 cp -- "$1" pal-copy.txt
 printf gbw > "${1%.*}.gbw"
 if grep -q fail-test "$1"; then echo 'Simulated ORCA failure' >&2; exit 7; fi
@@ -41,7 +44,7 @@ chmod +x "$test_dir/fake-bin/orca"
 export PATH=$test_dir/fake-bin:$PATH
 cd "$test_dir/work"
 printf '! HF STO-3G PAL8\n%%pal\n nprocs_group 1\nend\n%%maxcore 100\n* xyz 0 1\nH 0 0 0\nH 0 0 0.74\n*\n' > water.inp
-original=$(sha256sum water.inp)
+original=$(cksum water.inp)
 "$root/bin/Orca" --debug water.inp > debug.sh
 bash -n debug.sh
 grep -q '^#SBATCH -p normal$' debug.sh
@@ -53,7 +56,7 @@ if "$root/bin/Orca" --debug -m 33 water.inp >/dev/null 2>&1; then echo 'Expected
 cp water.inp 'water test.inp'
 if "$root/bin/Orca" --debug 'water test.inp' >/dev/null 2>&1; then echo 'Expected unsupported filename rejection'; exit 1; fi
 "$root/bin/Orca" --local water.inp > success.stdout 2>success.stderr
-[[ $(sha256sum water.inp) == "$original" ]]
+[[ $(cksum water.inp) == "$original" ]]
 [[ $(cat run-details.txt) == 700 ]]
 grep -qi '^%pal nprocs 2' pal-copy.txt
 ! grep -q PAL8 pal-copy.txt
@@ -78,6 +81,18 @@ if "$root/bin/Orca" --local water.inp > copy-failure.stdout 2>copy-failure.stder
 unset -f cp
 # Preserve WCSS defaults in a checkout without site configuration.
 mkdir "$test_dir/no-config"
-QJOB_CONFIG_DIR=$test_dir/no-config "$root/bin/Orca" --debug water.inp > wcss.sh
+QJOB_PROFILE=wcss QJOB_CONFIG_DIR=$test_dir/no-config "$root/bin/Orca" --debug water.inp > wcss.sh
 grep -q '^#SBATCH --gres=storage:shm:400g$' wcss.sh
+# A native binary needs neither a module nor Slurm; user settings and CLI win.
+printf 'ORCA_BINARY=%q\n' "$test_dir/fake-bin/orca" > "$QJOB_USER_CONFIG_DIR/orca.conf"
+printf 'cores=3\nmemory=6\n' > "$QJOB_USER_CONFIG_DIR/qjob.conf"
+QJOB_PROFILE=local "$root/bin/Orca" -c4 -m=8 --debug water.inp > local.sh 2>/dev/null && { echo 'Expected rejection of invalid short integer'; exit 1; }
+QJOB_PROFILE=local "$root/bin/Orca" -c4 --memory=8 --debug water.inp > local.sh
+grep -q '^#SBATCH --mem=8G$' local.sh
+QJOB_PROFILE=local "$root/bin/Orca" -c4 --background water.inp > background.stdout
+job_log=$(sed -n 's/^Job log: //p' background.stdout)
+for attempt in {1..100}; do [ ! -f "$job_log.exit-code" ] || break; sleep 0.1; done
+[[ $(cat "$job_log.exit-code") == 0 ]]
+grep -qi '^%pal nprocs 4' pal-copy.txt
+[[ $(cksum water.inp) == "$original" ]]
 echo 'PASS: site defaults, Slurm script, resource validation, PAL sync, unchanged input, private scratch, copy-back and failure retention'
