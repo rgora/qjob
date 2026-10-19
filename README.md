@@ -109,6 +109,10 @@ Qjob inicjalizuje Lmod i ładuje ten moduł wraz z zależnościami MPI; uruchami
 pełną ścieżkę sterownika ORCA jeden raz. Liczbę procesów ustawia w `%pal`
 w kopii wejścia w scratch. `%maxcore` pozostaje z wejścia; qjob ostrzega, gdy
 jego wartość razy liczba procesów przekracza 90% żądanej pamięci.
+Zadanie prosi o rdzenie fizyczne (`--hint=nomultithread`). Przed uruchomieniem
+sterownika ORCA przywracana jest maska CPU przydzielona przez cgroup v2 zadania,
+aby procesy MPI mogły korzystać z całej rezerwacji także wtedy, gdy powłoka batch
+jest przypisana tylko do jednego rdzenia.
 
 **Uwaga przy przejściu ze starego skryptu:** `-c` oznacza liczbę procesów,
 `-n` liczbę maszyn, a `-m` łączną pamięć w GB. Stary skrypt używał `-n`

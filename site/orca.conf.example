@@ -6,3 +6,4 @@ time_limit=24                 # hours
 version=6.1.1
 ORCA_MODULE_TEMPLATE='ORCA/%v-gompi-2023b-avx2'
 ORCA_PURGE_MODULES=true
+ORCA_BIND_ALLOCATION=true

@@ -34,6 +34,7 @@ signal_lead=300        # s before the time limit: USR1 -> copy-back of current r
 QJOB_SITE=WCSS
 QJOB_SCRATCH_ROOT="" QJOB_MODULEPATH="" QJOB_STORAGE_GRES=true
 QJOB_MAX_NODES=0 QJOB_MAX_CORES=0 QJOB_MAX_MEMORY=0
+QJOB_SLURM_HINT=""
 
 # ------------------------------------------------------------ application hooks
 APP_SYNOPSIS="input [input2 ...]"
@@ -169,6 +170,7 @@ make_script() {
     printf '#SBATCH --job-name="%s"\n' "$quoted_jobname"
     echo "#SBATCH -p $partition"
     echo "#SBATCH -N $nodes"
+    [ -z "$QJOB_SLURM_HINT" ] || echo "#SBATCH --hint=$QJOB_SLURM_HINT"
     if [ "$APP_TASKS" = mpi ]; then
         echo "#SBATCH --ntasks-per-node=$cores"
     else
@@ -199,7 +201,7 @@ make_script() {
 submit() {             # uses $input, $base, cwd
     jobname="$QJOB_APP:${name:-${input:-$base}}"
     local value
-    for value in "$jobname" "$partition" "$wall" "$nodelist" "$account" "$qos" "$reservation" "$mail" "$gres_all" "$slurmopt"; do
+    for value in "$jobname" "$partition" "$wall" "$nodelist" "$account" "$qos" "$reservation" "$mail" "$gres_all" "$slurmopt" "$QJOB_SLURM_HINT"; do
         [[ $value != *$'\n'* && $value != *$'\r'* ]] || die "newlines are not allowed in Slurm options or job names"
     done
     app_prepare || return 1

@@ -9,11 +9,12 @@ copy_back="%b.gbw *.hess *hess.root* %b.cis %b.*.nto %b.densities %b.densitiesin
 ORCA_MODULE=ORCA                  # module load ORCA[/<version>]
 ORCA_MODULE_TEMPLATE=""           # optional full name, e.g. ORCA/%v-gompi-2023b-avx2
 ORCA_PURGE_MODULES=false
+ORCA_BIND_ALLOCATION=false         # restore the cgroup v2 allocation mask before mpirun
 ORCA_COPY_EXT="gbw xyz hess oin mp2nat loc"   # copied from the input dir to TMPDIR
 orca_pal=sync
 
 APP_LONG="pal:"
-APP_VARS="ORCA_MODULE ORCA_MODULE_TEMPLATE ORCA_PURGE_MODULES ORCA_COPY_EXT orca_pal"
+APP_VARS="ORCA_MODULE ORCA_MODULE_TEMPLATE ORCA_PURGE_MODULES ORCA_BIND_ALLOCATION ORCA_COPY_EXT orca_pal"
 APP_FUNCS="orca_set_pal"
 
 app_usage() {
@@ -76,6 +77,17 @@ app_run() {
     module load "$orca_module" || return 1
     local orca_bin cur=$SLURM_SUBMIT_DIR ext f rc
     orca_bin=$(command -v orca) || { qjob_msg "orca not found after module load"; return 1; }
+    local -a launcher=()
+    if [ "$ORCA_BIND_ALLOCATION" = true ] && (( ! run_local )); then
+        local cgroup cpus
+        cgroup=$(awk -F: '$1 == "0" {print $3}' /proc/self/cgroup)
+        [ -n "$cgroup" ] && [ -r "/sys/fs/cgroup$cgroup/cpuset.cpus.effective" ] \
+            || { qjob_msg "cannot read the job's cgroup v2 CPU allocation"; return 1; }
+        cpus=$(cat "/sys/fs/cgroup$cgroup/cpuset.cpus.effective")
+        [[ $cpus =~ ^[0-9,-]+$ ]] || return 1
+        launcher=(taskset -c "$cpus")
+        qjob_msg "   ORCA allocation CPUs: $cpus"
+    fi
 
     cp -- "$cur/$input" "$TMPDIR/" || return 1
     ( cd "$cur" && shopt -s nullglob
@@ -88,7 +100,7 @@ app_run() {
     # stderr goes straight to a file (a pipe to sed hung NEB jobs).
     local log=$cur/$base-$QJOB_ID.log logtmp=$TMPDIR/$base-$QJOB_ID.log err=$TMPDIR/$base-$QJOB_ID.err
     qjob_msg "-- running $orca_bin $input"
-    "$orca_bin" "$input" < /dev/null 2> "$err" | tee --output-error=warn "$logtmp" > "$log"
+    "${launcher[@]}" "$orca_bin" "$input" < /dev/null 2> "$err" | tee --output-error=warn "$logtmp" > "$log"
     rc=${PIPESTATUS[0]}
     if ! grep -q 'ORCA TERMINATED NORMALLY' "$logtmp" \
         || grep -qE '^[[:space:]]*ORCA finished by error termination' "$logtmp"; then
