@@ -84,8 +84,7 @@ w `/opt/qjob`, należący do roota, i własne ustawienia w `/etc/qjob`.
 Na razie udostępniony jest tylko `Orca`:
 
 ```bash
-sudo git clone https://github.com/rgora/qjob.git /opt/qjob
-# Po pobraniu gałęzi z obsługą konfiguracji site:
+sudo git clone --branch site/shared-orca https://github.com/rgora/qjob.git /opt/qjob
 sudo /opt/qjob/site/install-orca.sh
 Orca -h
 Orca -c 4 -m 8 -t 2 calculation.inp
@@ -166,15 +165,35 @@ Obsługa ORCA działa z systemowym Bash 3.2 i narzędziami macOS. Nie wymaga GNU
 `getopt`, GNU `sed` ani GNU `readlink`. Obecnie ten zakres przenośności dotyczy
 wrappera `Orca`; pozostałe aplikacje mają własne wymagania środowiskowe.
 
-W `~/.config/qjob/orca.conf` należy podać istniejącą instalację:
+Można korzystać z istniejącego modułu. Przykład konfiguracji z tego Maca:
+
+`~/.config/qjob/qjob.conf`:
 
 ```bash
-ORCA_BINARY=/opt/orca/6.1.1/orca
+QJOB_MODULE_INIT=/opt/homebrew/opt/modules/init/bash
+QJOB_MODULEPATH=$HOME/.local/modulefiles
+cores=2
+memory=4
 ```
 
-`ORCA_BINARY` omija ładowanie modułów. ORCA oraz zgodne z nią biblioteki i MPI
-muszą już działać w danym systemie; qjob nie instaluje programu przez wybór profilu.
-Przykładowe preferencje w `~/.config/qjob/qjob.conf`: `cores=2` i `memory=4`.
+`~/.config/qjob/orca.conf`:
+
+```bash
+ORCA_MODULE=orca
+ORCA_BINARY=''
+ORCA_MODULE_TEMPLATE=''
+ORCA_PURGE_MODULES=true
+version=6.1.1
+```
+
+Qjob inicjalizuje Environment Modules także w procesie działającym w tle.
+Moduł `orca/6.1.1` ustawia ORCA oraz zgodne MPI i biblioteki. Na tym Macu
+wskazuje `/opt/orca/6.1.1` i `/opt/openmpi/4.1.6`.
+
+Alternatywnie, dla gotowej instalacji bez modułów można ustawić
+`ORCA_BINARY=/pełna/ścieżka/do/orca` w konfiguracji użytkownika; omija to ładowanie
+modułów. ORCA oraz zgodne biblioteki i MPI muszą już działać w danym systemie.
+Qjob nie instaluje programu przez wybór profilu.
 
 ```bash
 Orca --background -c 2 -m 4 water.inp
