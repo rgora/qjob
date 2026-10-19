@@ -6,8 +6,8 @@ root=$(cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)
 [[ $root == /opt/qjob ]] || { echo 'Install the checkout at /opt/qjob first.' >&2; exit 1; }
 host=$(hostname -s)
 case $host in
-    bohr) partition=normal; max_cores=64; max_memory=488 ;;
-    bose) partition=bose; max_cores=64; max_memory=488 ;;
+    bohr) partition=normal; max_cores=32; max_memory=488 ;;
+    bose) partition=bose; max_cores=32; max_memory=488 ;;
     ligol) partition=ligol; max_cores=16; max_memory=175 ;;
     *) echo "Unknown host: $host" >&2; exit 1 ;;
 esac
