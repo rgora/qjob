@@ -38,6 +38,8 @@ app_setup() {
 }
 
 app_prepare() {
+    [[ $input =~ ^[[:alnum:]_][[:alnum:]_.+-]*$ ]] \
+        || die "ORCA requires an input filename using only letters, digits, _, ., + and - (no spaces): $input"
     local np=$((nodes*cores)) mc n
     mc=$(grep -iE '^[[:space:]]*%maxcore[[:space:]]+[0-9]+' "$input" | grep -oE '[0-9]+' | tail -1)
     if [ -z "$mc" ]; then
@@ -88,6 +90,11 @@ app_run() {
     qjob_msg "-- running $orca_bin $input"
     "$orca_bin" "$input" < /dev/null 2> "$err" | tee --output-error=warn "$logtmp" > "$log"
     rc=${PIPESTATUS[0]}
+    if ! grep -q 'ORCA TERMINATED NORMALLY' "$logtmp" \
+        || grep -qE '^[[:space:]]*ORCA finished by error termination' "$logtmp"; then
+        qjob_msg "ERROR: ORCA did not terminate normally; retaining scratch"
+        rc=1
+    fi
 
     if ! cmp -s "$logtmp" "$log" && ! cp -- "$logtmp" "$log"; then
         qjob_msg "WARNING: could not copy the full log to $log; it stays in TMPDIR"

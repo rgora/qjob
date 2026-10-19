@@ -126,6 +126,10 @@ Wejście w katalogu użytkownika pozostaje bez zmian. Wyniki ORCA to
 `<nazwa>-<jobid>.log`, opcjonalny `.err` i pliki wskazane przez `--copy-back`.
 Domyślna lista obejmuje m.in. `.gbw`, `.hess`, `.cis`, geometrie i widma;
 pełny zestaw plików roboczych wymaga `--copy-back '*'` i odpowiedniej ilości miejsca.
+Nazwy wejść ORCA muszą składać się z liter, cyfr oraz znaków `_`, `.`, `+`, `-`;
+nazwy ze spacjami są odrzucane, ponieważ wewnętrzne wywołania MPI w ORCA nie
+obsługują ich poprawnie. Sukces wymaga kodu zero oraz komunikatu
+`ORCA TERMINATED NORMALLY` bez komunikatu o błędnym zakończeniu.
 
 Repozytorium w `/opt/qjob` i konfiguracja należą do roota. Zwykli użytkownicy
 uruchamiają `Orca` bez sudo i bez zmieniania PATH. Aktualizacje wykonuje administrator

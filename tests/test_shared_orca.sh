@@ -34,6 +34,7 @@ stat -c %a "$TMPDIR" > run-details.txt
 cp -- "$1" pal-copy.txt
 printf gbw > "${1%.*}.gbw"
 if grep -q fail-test "$1"; then echo 'Simulated ORCA failure' >&2; exit 7; fi
+if grep -q false-success-test "$1"; then echo 'ORCA finished by error termination in Startup'; exit 0; fi
 echo 'ORCA TERMINATED NORMALLY'
 MOCK
 chmod +x "$test_dir/fake-bin/orca"
@@ -49,6 +50,8 @@ grep -q '^#SBATCH --ntasks-per-node=2$' debug.sh
 if "$root/bin/Orca" --debug -n 2 water.inp >/dev/null 2>&1; then echo 'Expected node-limit rejection'; exit 1; fi
 if "$root/bin/Orca" --debug -c 0 water.inp >/dev/null 2>&1; then echo 'Expected zero-core rejection'; exit 1; fi
 if "$root/bin/Orca" --debug -m 33 water.inp >/dev/null 2>&1; then echo 'Expected memory-limit rejection'; exit 1; fi
+cp water.inp 'water test.inp'
+if "$root/bin/Orca" --debug 'water test.inp' >/dev/null 2>&1; then echo 'Expected unsupported filename rejection'; exit 1; fi
 "$root/bin/Orca" --local water.inp > success.stdout 2>success.stderr
 [[ $(sha256sum water.inp) == "$original" ]]
 [[ $(cat run-details.txt) == 700 ]]
@@ -60,6 +63,9 @@ grep -qi '^%pal nprocs 2' pal-copy.txt
 grep -q 'load ORCA/6.1.1-gompi-2023b-avx2' "$test_dir/modules.txt"
 printf '! fail-test\n' > failure.inp
 if "$root/bin/Orca" --local failure.inp > failure.stdout 2>failure.stderr; then echo 'Expected ORCA failure'; exit 1; fi
+[[ -d $(tail -1 "$test_dir/scratch-paths.txt") ]]
+printf '! false-success-test\n' > false-success.inp
+if "$root/bin/Orca" --local false-success.inp > false-success.stdout 2>false-success.stderr; then echo 'Expected rejection of ORCA error with exit code zero'; exit 1; fi
 [[ -d $(tail -1 "$test_dir/scratch-paths.txt") ]]
 # Failure copying a result must keep scratch and fail the job even after ORCA succeeds.
 cp() {
