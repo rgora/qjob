@@ -9,23 +9,42 @@ qjob_copy() {          # qjob_copy FROM TO "patterns"   (globs expand in FROM)
     [ -n "$pats" ] || return 0
     ( cd "$from" || exit 1
       shopt -s nullglob
+      local rc=0 f
       for f in $pats; do
           [ -e "$f" ] || continue
-          cp -r -- "$f" "$to/" && qjob_msg "    $f"
-      done )
+          if cp -r -- "$f" "$to/"; then qjob_msg "    $f"; else rc=1; fi
+      done
+      return "$rc" )
 }
 
 qjob_main() {
     [ -f /usr/local/sbin/modules.sh ] && source /usr/local/sbin/modules.sh
+    if ! type module >/dev/null 2>&1 && [ -r /etc/profile.d/lmod.sh ]; then
+        source /etc/profile.d/lmod.sh
+    fi
+    if [ -n "$QJOB_MODULEPATH" ]; then
+        module use "$QJOB_MODULEPATH" || exit 1
+    fi
+    local scratch_owned=0
     if (( run_local )); then
         QJOB_ID=local-$$
         export SLURM_SUBMIT_DIR=$PWD
-        TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/qjob.XXXXXX") || exit 1
-        export TMPDIR
     else
         QJOB_ID=$SLURM_JOB_ID
+    fi
+    if [ -n "$QJOB_SCRATCH_ROOT" ]; then
+        TMPDIR=$(mktemp -d "$QJOB_SCRATCH_ROOT/qjob-$(id -u).$QJOB_ID.XXXXXX") || exit 1
+        scratch_owned=1
+        export TMPDIR
+    elif (( run_local )); then
+        TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/qjob.XXXXXX") || exit 1
+        scratch_owned=1
+        export TMPDIR
+    else
         if [ -z "${TMPDIR:-}" ] || [ ! -d "$TMPDIR" ]; then
-            TMPDIR=$(mktemp -d "/tmp/qjob.$SLURM_JOB_ID.XXXX"); export TMPDIR
+            TMPDIR=$(mktemp -d "/tmp/qjob.$SLURM_JOB_ID.XXXX") || exit 1
+            scratch_owned=1
+            export TMPDIR
         fi
     fi
     local t0=$SECONDS status pid dt
@@ -37,7 +56,8 @@ qjob_main() {
     cd "$SLURM_SUBMIT_DIR" || exit 1
 
     if [ -n "$copy" ]; then
-        qjob_msg "-- copy to TMPDIR"; qjob_copy "$SLURM_SUBMIT_DIR" "$TMPDIR" "$copy"
+        qjob_msg "-- copy to TMPDIR"
+        qjob_copy "$SLURM_SUBMIT_DIR" "$TMPDIR" "$copy" || exit 1
     fi
 
     if (( run_local )); then
@@ -54,14 +74,18 @@ qjob_main() {
 
     cd "$SLURM_SUBMIT_DIR"
     if [ -n "$copy_back" ]; then
-        qjob_msg "-- copy back from TMPDIR"; qjob_copy "$TMPDIR" "$SLURM_SUBMIT_DIR" "$copy_back"
+        qjob_msg "-- copy back from TMPDIR"
+        qjob_copy "$TMPDIR" "$SLURM_SUBMIT_DIR" "$copy_back" || status=1
     fi
-    if (( run_local )); then
-        rm -rf "$TMPDIR"
-    elif [ "$clean_tmp" = always ] || { [ "$clean_tmp" = success ] && [ "$status" -eq 0 ]; }; then
-        qjob_msg "-- cleaning TMPDIR"; rm -rf "${TMPDIR:?}"/*
+    if [ "$clean_tmp" = always ] || { [ "$clean_tmp" = success ] && [ "$status" -eq 0 ]; }; then
+        qjob_msg "-- cleaning TMPDIR"
+        if (( scratch_owned )); then
+            rm -rf -- "${TMPDIR:?}" || status=1
+        else
+            find "${TMPDIR:?}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + || status=1
+        fi
     else
-        qjob_msg "   TMPDIR contents kept by WCSS under /lustre/tmp/slurm/finished_jobs/$QJOB_ID"
+        qjob_msg "   TMPDIR contents retained at $TMPDIR"
     fi
     dt=$((SECONDS - t0))
     qjob_msg "== exit status $status   elapsed $(printf '%02d:%02d:%02d' $((dt/3600)) $((dt%3600/60)) $((dt%60)))   $(date)"

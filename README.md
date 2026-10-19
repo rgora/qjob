@@ -76,3 +76,57 @@ zmienne przekazywane do zadania w `APP_VARS`.
 ## Licencja
 
 MIT, zob. `LICENSE`.
+
+## Wspólna instalacja: bohr, bose i ligol
+
+Kod jest wspólny dla użytkowników danej maszyny; każda maszyna ma własny checkout
+w `/opt/qjob`, należący do roota, i własne ustawienia w `/etc/qjob`.
+Na razie udostępniony jest tylko `Orca`:
+
+```bash
+sudo git clone https://github.com/rgora/qjob.git /opt/qjob
+# Po pobraniu gałęzi z obsługą konfiguracji site:
+sudo /opt/qjob/site/install-orca.sh
+Orca -h
+Orca -c 4 -m 8 -t 2 calculation.inp
+Orca --debug -c 4 -m 8 calculation.inp
+```
+
+Installer zachowuje istniejący `/usr/local/bin/Orca` jako `Orca.old`, a gdy ta kopia
+już istnieje, jako `Orca.<data>-<pid>.old`. Tworzy dowiązanie do `/opt/qjob/bin/Orca`.
+Powtórne uruchomienie zachowuje istniejące pliki konfiguracyjne i poprawne dowiązanie.
+
+Kolejność ustawień: wartości w kodzie, `/etc/qjob/qjob.conf`, `/etc/qjob/orca.conf`,
+opcje polecenia. Pliki `.conf` są zaufanym kodem Bash, zapisywalnym tylko przez
+administratora. `QJOB_CONFIG_DIR` pozwala wskazać inny katalog, np. przy testowaniu.
+Pliki `site/*.conf.example` pokazują dostępne ustawienia. Domyślnie pozostaje
+konfiguracja WCSS, jeśli nie zainstalowano konfiguracji lokalnej.
+
+Lokalne partycje to `normal` na bohr, `bose` na bose i `ligol` na ligol.
+Domyślne zasoby ORCA: jedna maszyna, 4 procesy, 8 GB łącznie, 24 godziny.
+Wersja `6.1.1` jest mapowana na moduł `ORCA/6.1.1-gompi-2023b-avx2`.
+Qjob inicjalizuje Lmod i ładuje ten moduł wraz z zależnościami MPI; uruchamia
+pełną ścieżkę sterownika ORCA jeden raz. Liczbę procesów ustawia w `%pal`
+w kopii wejścia w scratch. `%maxcore` pozostaje z wejścia; qjob ostrzega, gdy
+jego wartość razy liczba procesów przekracza 90% żądanej pamięci.
+
+**Uwaga przy przejściu ze starego skryptu:** `-c` oznacza liczbę procesów,
+`-n` liczbę maszyn, a `-m` łączną pamięć w GB. Stary skrypt używał `-n`
+do liczby procesów i `-m` do `%maxcore` w MB. Nie należy przenosić dawnych
+poleceń bez zmiany tych opcji. `--local` zastępuje dawny tryb `-s`.
+
+Scratch powstaje przez `mktemp -d` pod `/scratch/qjob` (katalog nadrzędny 1777;
+katalog zadania 0700, unikalny dla UID i job ID). Domyślnie jest usuwany po
+poprawnym obliczeniu i skopiowaniu wyników; błąd zachowuje scratch, a jego ścieżka
+jest w `slurm-<jobid>.out`. Można użyć `--clean-tmp false`, aby zachować go także
+po sukcesie. Opcja `--storage local:<size>` na tych maszynach nie rezerwuje miejsca
+ani nie narzuca limitu dyskowego; nie wysyła GRES do Slurma.
+
+Wejście w katalogu użytkownika pozostaje bez zmian. Wyniki ORCA to
+`<nazwa>-<jobid>.log`, opcjonalny `.err` i pliki wskazane przez `--copy-back`.
+Domyślna lista obejmuje m.in. `.gbw`, `.hess`, `.cis`, geometrie i widma;
+pełny zestaw plików roboczych wymaga `--copy-back '*'` i odpowiedniej ilości miejsca.
+
+Repozytorium w `/opt/qjob` i konfiguracja należą do roota. Zwykli użytkownicy
+uruchamiają `Orca` bez sudo i bez zmieniania PATH. Aktualizacje wykonuje administrator
+przez Git, po sprawdzeniu gałęzi i lokalnych zmian (`sudo git -C /opt/qjob status`).
