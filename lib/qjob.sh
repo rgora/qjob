@@ -32,7 +32,7 @@ name="" version="" copy="" copy_back="" clean_tmp=false
 debug=0 run_local=0 background=0 show_help=0
 signal_lead=300        # s before the time limit: USR1 -> copy-back of current results
 QJOB_SITE=WCSS
-QJOB_SCRATCH_ROOT="" QJOB_MODULEPATH="" QJOB_STORAGE_GRES=true
+QJOB_SCRATCH_ROOT="" QJOB_MODULEPATH="" QJOB_MODULE_INIT="" QJOB_STORAGE_GRES=true
 QJOB_MAX_NODES=0 QJOB_MAX_CORES=0 QJOB_MAX_MEMORY=0
 QJOB_SLURM_HINT=""
 
@@ -177,7 +177,7 @@ gres_all=${gres_all}${gres:+${gres_all:+,}$gres}
 
 # ------------------------------------------------------------ job script
 QJOB_VARS="QJOB_APP QJOB_CMD jobname input base nodes cores memory version copy copy_back clean_tmp run_local"
-QJOB_VARS+=" QJOB_SCRATCH_ROOT QJOB_MODULEPATH"
+QJOB_VARS+=" QJOB_SCRATCH_ROOT QJOB_MODULEPATH QJOB_MODULE_INIT"
 
 make_script() {
     local quoted_jobname=${jobname//\\/\\\\}

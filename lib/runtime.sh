@@ -18,7 +18,10 @@ qjob_copy() {          # qjob_copy FROM TO "patterns"   (globs expand in FROM)
 }
 
 qjob_main() {
-    if ! type module >/dev/null 2>&1; then
+    if [ -n "$QJOB_MODULE_INIT" ]; then
+        [ -r "$QJOB_MODULE_INIT" ] && source "$QJOB_MODULE_INIT" \
+            || { qjob_msg "cannot initialize modules: $QJOB_MODULE_INIT"; exit 1; }
+    elif ! type module >/dev/null 2>&1; then
         if [ -r /usr/local/sbin/modules.sh ]; then
             source /usr/local/sbin/modules.sh
         elif [ -r /etc/profile.d/lmod.sh ]; then
