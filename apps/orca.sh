@@ -7,11 +7,13 @@ cores=32 memory=200 storage=shm:400g time_limit=72
 copy_back="%b.gbw *.hess *hess.root* %b.cis %b.*.nto %b.densities %b.densitiesinfo *.txt *spectrum* *.xyz"
 
 ORCA_MODULE=ORCA                  # module load ORCA[/<version>]
+ORCA_MODULE_TEMPLATE=""           # optional full name, e.g. ORCA/%v-gompi-2023b-avx2
+ORCA_PURGE_MODULES=false
 ORCA_COPY_EXT="gbw xyz hess oin mp2nat loc"   # copied from the input dir to TMPDIR
 orca_pal=sync
 
 APP_LONG="pal:"
-APP_VARS="ORCA_MODULE ORCA_COPY_EXT orca_pal"
+APP_VARS="ORCA_MODULE ORCA_MODULE_TEMPLATE ORCA_PURGE_MODULES ORCA_COPY_EXT orca_pal"
 APP_FUNCS="orca_set_pal"
 
 app_usage() {
@@ -40,8 +42,8 @@ app_prepare() {
     mc=$(grep -iE '^[[:space:]]*%maxcore[[:space:]]+[0-9]+' "$input" | grep -oE '[0-9]+' | tail -1)
     if [ -z "$mc" ]; then
         warn "$input: no %maxcore (ORCA default per process will be used)"
-    elif (( mc * cores > memory * 1024 * 9 / 10 )); then
-        warn "$input: %maxcore $mc x $cores procs = $((mc*cores)) MB > 90% of --memory ${memory} GB"
+    elif (( mc * np > memory * 1024 * nodes * 9 / 10 )); then
+        warn "$input: %maxcore $mc x $np procs = $((mc*np)) MB > 90% of allocated memory"
     fi
     if [ "$orca_pal" = keep ]; then
         n=$(grep -ioE '^[[:space:]]*(%pal[[:space:]]+)?nprocs[[:space:]]+[0-9]+' "$input" | grep -oE '[0-9]+$' | head -1)
@@ -56,17 +58,26 @@ orca_set_pal() {       # orca_set_pal FILE NPROCS  (edits the TMPDIR copy only)
         -e "s/^([[:space:]]*%pal[[:space:]]+nprocs[[:space:]]+)[0-9]+/\1$np/I" \
         -e "s/^([[:space:]]*nprocs[[:space:]]+)[0-9]+/\1$np/I" \
         -e "/^[[:space:]]*!/s/(!|[[:space:]])PAL[0-9]+\b/\1/Ig" "$f"
-    grep -qiE '^[[:space:]]*(%pal[[:space:]]+)?nprocs[[:space:]]' "$f" || sed -i "1i %pal nprocs $np end" "$f"
+    if ! grep -qiE '^[[:space:]]*(%pal[[:space:]]+)?nprocs[[:space:]]' "$f"; then
+        if grep -qiE '^[[:space:]]*%pal([[:space:]]|$)' "$f"; then
+            sed -i -E "s/^([[:space:]]*%pal)([[:space:]]|$)/\1 nprocs $np\2/I" "$f"
+        else
+            sed -i "1i %pal nprocs $np end" "$f"
+        fi
+    fi
 }
 
 app_run() {
-    module load "$ORCA_MODULE${version:+/$version}" || return 1
+    [ "$ORCA_PURGE_MODULES" != true ] || module purge || return 1
+    local orca_module="$ORCA_MODULE${version:+/$version}"
+    [ -z "$ORCA_MODULE_TEMPLATE" ] || orca_module=${ORCA_MODULE_TEMPLATE//%v/$version}
+    module load "$orca_module" || return 1
     local orca_bin cur=$SLURM_SUBMIT_DIR ext f rc
     orca_bin=$(command -v orca) || { qjob_msg "orca not found after module load"; return 1; }
 
-    cp "$cur/$input" "$TMPDIR/" || return 1
+    cp -- "$cur/$input" "$TMPDIR/" || return 1
     ( cd "$cur" && shopt -s nullglob
-      for ext in $ORCA_COPY_EXT; do for f in *."$ext"; do cp -- "$f" "$TMPDIR/"; done; done )
+      for ext in $ORCA_COPY_EXT; do for f in *."$ext"; do cp -- "$f" "$TMPDIR/" || exit 1; done; done ) || return 1
     cd "$TMPDIR" || return 1
     [ "$orca_pal" = sync ] && orca_set_pal "$input" $((nodes*cores))
 
@@ -78,9 +89,11 @@ app_run() {
     "$orca_bin" "$input" < /dev/null 2> "$err" | tee --output-error=warn "$logtmp" > "$log"
     rc=${PIPESTATUS[0]}
 
-    cmp -s "$logtmp" "$log" || cp "$logtmp" "$log" \
-        || qjob_msg "WARNING: could not copy the full log to $log (quota?); it stays in TMPDIR"
-    if [ -s "$err" ]; then sed 's/^/    /' "$err" >&2; cp "$err" "$cur/"; fi
+    if ! cmp -s "$logtmp" "$log" && ! cp -- "$logtmp" "$log"; then
+        qjob_msg "WARNING: could not copy the full log to $log; it stays in TMPDIR"
+        rc=1
+    fi
+    if [ -s "$err" ]; then sed 's/^/    /' "$err" >&2; cp -- "$err" "$cur/" || rc=1; fi
     qjob_msg "-- orca exit status $rc"
     ls -ltrh >&2
     return "$rc"

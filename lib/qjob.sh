@@ -31,6 +31,9 @@ nodelist="" account="" qos="" mail="" reservation="" exclusive=0 slurmopt=""
 name="" version="" copy="" copy_back="" clean_tmp=false
 debug=0 run_local=0 show_help=0
 signal_lead=300        # s before the time limit: USR1 -> copy-back of current results
+QJOB_SITE=WCSS
+QJOB_SCRATCH_ROOT="" QJOB_MODULEPATH="" QJOB_STORAGE_GRES=true
+QJOB_MAX_NODES=0 QJOB_MAX_CORES=0 QJOB_MAX_MEMORY=0
 
 # ------------------------------------------------------------ application hooks
 APP_SYNOPSIS="input [input2 ...]"
@@ -48,9 +51,18 @@ app_run()     { :; }          # job body (runs inside the job)
 # shellcheck source=/dev/null
 source "$QJOB_ROOT/apps/$QJOB_APP.sh"     # may override the defaults above
 
+# Site defaults belong outside the Git checkout. CLI options take precedence.
+QJOB_CONFIG_DIR=${QJOB_CONFIG_DIR:-/etc/qjob}
+for config in "$QJOB_CONFIG_DIR/qjob.conf" "$QJOB_CONFIG_DIR/$QJOB_APP.conf"; do
+    if [ -f "$config" ]; then
+        [ -r "$config" ] || die "configuration is not readable: $config"
+        source "$config" || die "could not load configuration: $config"
+    fi
+done
+
 usage() {
 cat >&2 <<EOF
-${blu}$QJOB_CMD${end} (qjob @ WCSS)
+${blu}$QJOB_CMD${end} (qjob @ $QJOB_SITE)
 Usage: $QJOB_CMD [options] $APP_SYNOPSIS
 
 Resources                                              [default]
@@ -120,27 +132,41 @@ while :; do
 done
 
 if (( show_help )); then usage; exit 0; fi
-app_setup
 [ $# -gt 0 ] || { usage; exit 1; }
 
 # ------------------------------------------------------------ checks
 for v in nodes cores memory; do
-    [[ ${!v} =~ ^[0-9]+$ ]] || die "--$v must be an integer (got '${!v}')"
+    [[ ${!v} =~ ^[1-9][0-9]*$ ]] || die "--$v must be a positive integer (got '${!v}')"
+done
+app_setup
+for v in NODES CORES MEMORY; do
+    limit_var=QJOB_MAX_$v
+    [[ ${!limit_var} =~ ^[0-9]+$ ]] || die "invalid site limit $limit_var"
+    resource=${v,,}
+    (( ${!limit_var} == 0 || ${!resource} <= ${!limit_var} )) \
+        || die "--$resource exceeds the site limit (${!limit_var})"
 done
 if [[ $time_limit =~ ^[0-9]+$ ]]; then wall="$time_limit:00:00"; else wall=$time_limit; fi
 [ -z "$storage" ] || [[ $storage =~ ^(shm|local|lustre):[0-9]+[kKmMgGtT]?[bB]?$ ]] \
     || die "--storage must be shm|local|lustre:<size>, e.g. shm:200g"
 [[ $clean_tmp =~ ^(false|success|always)$ ]] || die "--clean-tmp must be false|success|always"
 [ "$APP_TASKS" = threads ] && (( nodes > 1 )) && die "$QJOB_APP in this mode runs on one node only"
-gres_all=${storage:+storage:$storage}
+if [ -n "$QJOB_SCRATCH_ROOT" ] && [ -n "$storage" ] && [[ $storage != local:* ]]; then
+    die "this site uses local scratch; use --storage local:<size> or omit --storage"
+fi
+gres_all=""
+[ "$QJOB_STORAGE_GRES" != true ] || gres_all=${storage:+storage:$storage}
 gres_all=${gres_all}${gres:+${gres_all:+,}$gres}
 
 # ------------------------------------------------------------ job script
 QJOB_VARS="QJOB_APP QJOB_CMD jobname input base nodes cores memory version copy copy_back clean_tmp run_local"
+QJOB_VARS+=" QJOB_SCRATCH_ROOT QJOB_MODULEPATH"
 
 make_script() {
+    local quoted_jobname=${jobname//\\/\\\\}
+    quoted_jobname=${quoted_jobname//\"/\\\"}
     echo '#!/bin/bash'
-    echo "#SBATCH -J $jobname"
+    printf '#SBATCH --job-name="%s"\n' "$quoted_jobname"
     echo "#SBATCH -p $partition"
     echo "#SBATCH -N $nodes"
     if [ "$APP_TASKS" = mpi ]; then
@@ -172,6 +198,10 @@ make_script() {
 
 submit() {             # uses $input, $base, cwd
     jobname="$QJOB_APP:${name:-${input:-$base}}"
+    local value
+    for value in "$jobname" "$partition" "$wall" "$nodelist" "$account" "$qos" "$reservation" "$mail" "$gres_all" "$slurmopt"; do
+        [[ $value != *$'\n'* && $value != *$'\r'* ]] || die "newlines are not allowed in Slurm options or job names"
+    done
     app_prepare || return 1
     copy=${copy_t//%b/$base} copy_back=${copy_back_t//%b/$base}
     local script; script=$(make_script)
