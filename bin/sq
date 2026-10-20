@@ -1,0 +1,310 @@
+#!/usr/bin/env bash
+# sj — Slurm job helper
+#   sj              queue listing: JOBID NAME STATE TIME_LEFT MIN_MEMORY WORKDIR
+#   sj -s [JOBID]   interactive shell on the node of a running job (srun --overlap)
+#   sj -d           only jobs submitted from the current directory or below (incl. PENDING)
+#   sj -a [JOBID]   readable sacct summary: allocated vs used memory, CPU efficiency, exit code
+# Run "sj -h" for all options.
+
+set -o pipefail
+PROG=$(basename "$0")
+
+usage() {
+    cat <<EOF
+Usage:
+  $PROG [JOBID ...] [-d] [-c] [-n] [-w [SEC]]   list your jobs (default)
+  $PROG -s [JOBID]                              shell on the node of a running job
+  $PROG -a [JOBID ...] [-d] [-S TIME]           resource usage from sacct
+
+Listing:
+  -d        only jobs whose working directory (or batch script) lies in the
+            current directory or its subdirectories; includes PENDING jobs
+  -c        show the submit command (script + arguments) instead of WORKDIR
+  -n        add NODELIST(REASON) column
+  -w [SEC]  refresh every SEC seconds (default 2); Ctrl-C to stop
+
+Interactive shell:
+  -s JOBID  srun --jobid=JOBID --overlap --pty bash
+  -s        without JOBID: the only running job, or choose from a menu
+
+Accounting (sacct):
+  -a JOBID        detailed view of one job, including job steps
+  -a ID1 ID2 ...  one line per job
+  -a              all your jobs since today 00:00 (one line per job)
+  -S TIME         start time for -a without JOBID, e.g. now-3days, 2026-10-01
+  -d              with -a: only jobs from the current directory or below
+
+  MEM%  = peak memory (MaxRSS over steps) / allocated memory
+  CPU%  = TotalCPU / (Elapsed x allocated CPUs)
+  For running jobs sacct has no MaxRSS/TotalCPU yet; -a JOBID then also
+  queries sstat for live values.
+
+Options can be combined, e.g. "$PROG -dw 5" or "$PROG -ad -S now-7days".
+EOF
+}
+
+# ---------------------------------------------------------------- arguments
+MODE=list FILTER=0 SHOW_CMD=0 SHOW_NODE=0 WATCH=0 INTERVAL=2 SINCE="" IDS=()
+while (($#)); do
+    # split combined short options: -dc -> -d -c
+    if [[ $1 =~ ^-[a-zA-Z]{2,}$ ]]; then set -- "${1:0:2}" "-${1:2}" "${@:2}"; fi
+    case $1 in
+        -h|--help) usage; exit 0 ;;
+        -d) FILTER=1 ;;
+        -c) SHOW_CMD=1 ;;
+        -n) SHOW_NODE=1 ;;
+        -w) WATCH=1
+            if [[ ${2-} =~ ^[0-9]+([.][0-9]+)?$ ]]; then INTERVAL=$2; shift; fi ;;
+        -s) MODE=srun ;;
+        -a) MODE=acct ;;
+        -S) [[ -n ${2-} ]] || { echo "$PROG: -S needs a time" >&2; exit 2; }
+            SINCE=$2; shift ;;
+        -*) echo "$PROG: unknown option $1" >&2; echo "Try: $PROG -h" >&2; exit 2 ;;
+        *)  IDS+=("$1") ;;
+    esac
+    shift
+done
+
+USER=${USER:-$(id -un)}
+PWD_L=$PWD
+PWD_P=$(pwd -P)
+if [[ -t 1 ]]; then COLOR=1; else COLOR=0; fi
+IDLIST=$(IFS=,; echo "${IDS[*]}")
+
+# Shared awk helpers: colours, ~ abbreviation, directory test, padding
+AWK_COMMON='
+function tilde(p) { return (p == home || index(p, home "/") == 1) ? "~" substr(p, length(home) + 1) : p }
+function under(p, d) { return d != "" && (p == d || index(p, d "/") == 1) }
+function in_dir(wd, cmd,   c) {
+    split(cmd, c, " ")
+    return under(wd, d1) || under(wd, d2) || under(c[1], d1) || under(c[1], d2)
+}
+function scol(s) {
+    if (!color) return ""
+    if (s ~ /^(RUNNING|COMPLETING)/)                         return "\033[32m"
+    if (s ~ /^(PENDING|REQUEUED|SUSPENDED|CONFIGURING)/)     return "\033[33m"
+    if (s ~ /^COMPLETED/)                                    return "\033[32m"
+    if (s ~ /^(FAILED|TIMEOUT|OUT_OF_ME|CANCELLED|NODE_FAIL|PREEMPTED|BOOT_FAIL|DEADLINE)/) return "\033[31m"
+    return ""
+}
+function pad(s, w, c) { return c (w > 0 ? sprintf("%-" w "s", s) : s) (c != "" ? "\033[0m" : "") }
+function bold(s) { return color ? "\033[1m" s "\033[0m" : s }
+'
+
+# ---------------------------------------------------------------- listing
+list_jobs() {
+    local args=(--user="$USER" -h -o '%i|%j|%T|%L|%m|%Z|%o|%R')
+    [[ -n $IDLIST ]] && args+=(--jobs="$IDLIST")
+    squeue "${args[@]}" | awk -F'|' -v home="$HOME" -v color="$COLOR" \
+        -v filt="$FILTER" -v showcmd="$SHOW_CMD" -v shownode="$SHOW_NODE" \
+        -v d1="$PWD_L" -v d2="$PWD_P" "$AWK_COMMON"'
+    {
+        if (filt && !in_dir($6, $7)) next
+        n++
+        f[n,1] = $1; f[n,2] = $2; f[n,3] = $3; f[n,4] = $4; f[n,5] = $5
+        f[n,6] = tilde(showcmd ? $7 : $6)
+        f[n,7] = $8
+    }
+    END {
+        if (n == 0) { print "No jobs" (filt ? " from this directory." : "."); exit }
+        split("JOBID NAME STATE TIME_LEFT MIN_MEM " (showcmd ? "COMMAND" : "WORKDIR") " NODELIST(REASON)", h, " ")
+        nc = shownode ? 7 : 6
+        if (shownode) { tmp = h[6]; h[6] = h[7]; h[7] = tmp }   # put REASON before the long path
+        for (i = 1; i <= n; i++) if (shownode) { tmp = f[i,6]; f[i,6] = f[i,7]; f[i,7] = tmp }
+        for (j = 1; j <= nc; j++) { w[j] = length(h[j]); for (i = 1; i <= n; i++) if (length(f[i,j]) > w[j]) w[j] = length(f[i,j]) }
+        line = ""; for (j = 1; j <= nc; j++) line = line (j > 1 ? "  " : "") (j < nc ? sprintf("%-" w[j] "s", h[j]) : h[j])
+        print bold(line)
+        for (i = 1; i <= n; i++) {
+            line = ""
+            for (j = 1; j <= nc; j++) {
+                c = (j == 3) ? scol(f[i,j]) : ""
+                line = line (j > 1 ? "  " : "") (j < nc ? pad(f[i,j], w[j], c) : f[i,j])
+            }
+            print line
+        }
+    }'
+}
+
+# ---------------------------------------------------------------- srun
+do_srun() {
+    local id=${IDS[0]-} running j
+    if [[ -z $id ]]; then
+        mapfile -t running < <(squeue --user="$USER" -h -t RUNNING -o '%i  %j  %N')
+        case ${#running[@]} in
+            0) echo "No running jobs." >&2; exit 1 ;;
+            1) id=${running[0]%% *} ;;
+            *) PS3="Job #: "
+               select j in "${running[@]}"; do
+                   [[ -n $j ]] && { id=${j%% *}; break; }
+               done ;;
+        esac
+    fi
+    [[ -n $id ]] || exit 1
+    echo "Entering job $id ($(squeue -h -j "$id" -o %N 2>/dev/null))..." >&2
+    exec srun --jobid="$id" --overlap --pty bash
+}
+
+# ---------------------------------------------------------------- sacct
+do_acct() {
+    local args=(-P -n --user="$USER"
+        -o JobID,JobName,State,ExitCode,ElapsedRaw,Timelimit,NCPUS,NNodes,NTasks,NodeList,ReqMem,AllocTRES,MaxRSS,TotalCPU,Start,End,WorkDir)
+    if [[ -n $IDLIST ]]; then
+        args+=(--jobs="$IDLIST")
+    else
+        args+=(-S "${SINCE:-today}")
+    fi
+    local data live=""
+    data=$(sacct "${args[@]}") || exit 1
+    [[ -n $data ]] || { echo "No accounting records."; return; }
+
+    # live values for a single running job
+    if ((${#IDS[@]} == 1)) && grep -q '^[^.|]*|[^|]*|RUNNING' <<<"$data"; then
+        live=$(sstat -a -P -n -j "${IDS[0]}" -o JobID,MaxRSS,NTasks,AveCPU 2>/dev/null)
+    fi
+
+    awk -F'|' -v home="$HOME" -v color="$COLOR" -v filt="$FILTER" \
+        -v d1="$PWD_L" -v d2="$PWD_P" -v live="$live" "$AWK_COMMON"'
+    function to_mb(s,   u, v) {
+        sub(/[nc]$/, "", s)                      # old ReqMem suffixes
+        if (s == "") return -1
+        u = substr(s, length(s))
+        if (u ~ /[KMGTP]/) v = substr(s, 1, length(s) - 1) + 0; else { v = s + 0; u = "B" }
+        if (u == "K") return v / 1024
+        if (u == "M") return v
+        if (u == "G") return v * 1024
+        if (u == "T") return v * 1048576
+        if (u == "P") return v * 1073741824
+        return v / 1048576
+    }
+    function hmem(mb) {
+        if (mb < 0) return "-"
+        if (mb >= 1048576) return sprintf("%.2fT", mb / 1048576)
+        if (mb >= 1024)    return sprintf("%.1fG", mb / 1024)
+        return sprintf("%.0fM", mb)
+    }
+    function to_sec(t,   d, a, n) {          # [D-][HH:]MM:SS[.mmm]
+        if (t == "" || t !~ /^[0-9]/) return -1
+        d = 0
+        if (index(t, "-")) { split(t, a, "-"); d = a[1]; t = a[2] }
+        n = split(t, a, ":")
+        if (n == 3) return d * 86400 + a[1] * 3600 + a[2] * 60 + a[3]
+        if (n == 2) return d * 86400 + a[1] * 60 + a[2]
+        return d * 86400 + a[1]
+    }
+    function hsec(s,   d, h, m) {
+        if (s < 0) return "-"
+        s = int(s + 0.5); d = int(s / 86400); s -= d * 86400
+        h = int(s / 3600); m = int((s % 3600) / 60); s = s % 60
+        return (d ? d "-" : "") sprintf("%02d:%02d:%02d", h, m, s)
+    }
+    function pct(a, b) { return (a >= 0 && b > 0) ? sprintf("%.0f%%", 100 * a / b) : "-" }
+    {
+        id = $1; key = id; sub(/\..*/, "", key)
+        if (!(key in seen)) { seen[key] = 1; order[++nj] = key; peak[key] = -1 }
+        if (id == key) {                          # job allocation line
+            name[key] = $2; st = $3; sub(/ .*/, "", st); state[key] = st
+            ex[key] = $4; el[key] = $5 + 0; tlim[key] = $6
+            ncpu[key] = $7 + 0; nnod[key] = $8; nodes[key] = $10
+            mem = -1
+            if (match($12, /mem=[0-9.]+[KMGTP]?/)) mem = to_mb(substr($12, RSTART + 4, RLENGTH - 4))
+            if (mem < 0) { mem = to_mb($11); if ($11 ~ /c$/) mem *= ncpu[key] }
+            amem[key] = mem
+            cpu[key] = to_sec($14); start[key] = $15; end[key] = $16; wd[key] = $17
+        } else {                                  # job step
+            r = to_mb($13); nt = $9 + 0
+            if (r >= 0 && nt > 1) r *= nt         # MaxRSS is per task
+            if (r > peak[key]) peak[key] = r
+            ns[key]++; s = key SUBSEP ns[key]
+            sid[s] = substr(id, length(key) + 2); sst[s] = $3; sex[s] = $4
+            sel[s] = $5 + 0; snt[s] = $9; srss[s] = (r >= 0 ? r : -1); scpu[s] = to_sec($14)
+        }
+    }
+    END {
+        # live sstat data (single running job)
+        nl = split(live, L, "\n")
+        for (i = 1; i <= nl; i++) {
+            if (L[i] == "") continue
+            split(L[i], g, "|"); k = g[1]; sub(/\..*/, "", k)
+            r = to_mb(g[2]); if (g[3] + 0 > 1) r *= g[3]
+            if (!(k in lrss) || r > lrss[k]) lrss[k] = r
+            lstep[g[1]] = r
+        }
+        m = 0
+        for (i = 1; i <= nj; i++) {
+            k = order[i]
+            if (!(k in state)) continue           # steps without job line
+            if (filt && !in_dir(wd[k], "")) continue
+            sel_[++m] = k
+        }
+        if (m == 0) { print "No accounting records" (filt ? " from this directory." : "."); exit }
+
+        if (m == 1) {                            # -------- detailed view
+            k = sel_[1]
+            pk = peak[k]; if (pk < 0 && (k in lrss)) pk = lrss[k]
+            printf "%s  %s  (%s)\n", bold("Job"), bold(k), name[k]
+            printf "State      %s   exit code %s\n", pad(state[k], 0, scol(state[k])), ex[k]
+            printf "Workdir    %s\n", tilde(wd[k])
+            printf "Nodes      %s  %s    CPUs %d\n", nnod[k], nodes[k], ncpu[k]
+            printf "Start      %s\n", start[k]
+            printf "End        %s\n", end[k]
+            tl = to_sec(tlim[k])
+            printf "Elapsed    %s of %s (%s)\n", hsec(el[k]), tlim[k], pct(el[k], tl)
+            printf "Memory     peak %s of %s allocated (%s)%s\n", hmem(pk), hmem(amem[k]), pct(pk, amem[k]),
+                   (peak[k] < 0 && (k in lrss)) ? "  [live, sstat]" : ""
+            if (cpu[k] > 0)
+                printf "CPU        total %s, efficiency %s  (%d CPUs x %s)\n", hsec(cpu[k]), pct(cpu[k], el[k] * ncpu[k]), ncpu[k], hsec(el[k])
+            else
+                printf "CPU        -  (not available%s)\n", state[k] == "RUNNING" ? " until the job ends" : ""
+            if (ns[k] > 0) {
+                printf "\n%s\n", bold(sprintf("%-12s %-12s %-6s %-12s %6s %9s %12s", "STEP", "STATE", "EXIT", "ELAPSED", "TASKS", "MAXRSS", "TOTALCPU"))
+                for (j = 1; j <= ns[k]; j++) {
+                    s = k SUBSEP j; r = srss[s]
+                    if (r < 0 && ((k "." sid[s]) in lstep)) r = lstep[k "." sid[s]]
+                    printf "%-12s %s %-6s %-12s %6s %9s %12s\n", sid[s], pad(sst[s], 12, scol(sst[s])), sex[s],
+                           hsec(sel[s]), snt[s], hmem(r), hsec(scpu[s] > 0 ? scpu[s] : -1)
+                }
+            }
+            exit
+        }
+        # -------- one line per job
+        split("JOBID NAME STATE EXIT ELAPSED CPUS MEM_ALLOC MEM_PEAK MEM% CPU% WORKDIR", h, " ")
+        nc = 11
+        for (i = 1; i <= m; i++) {
+            k = sel_[i]
+            F[i,1] = k; F[i,2] = name[k]; F[i,3] = state[k]; F[i,4] = ex[k]
+            F[i,5] = hsec(el[k]); F[i,6] = ncpu[k]; F[i,7] = hmem(amem[k]); F[i,8] = hmem(peak[k])
+            F[i,9] = pct(peak[k], amem[k]); F[i,10] = (cpu[k] > 0 ? pct(cpu[k], el[k] * ncpu[k]) : "-")
+            F[i,11] = tilde(wd[k])
+        }
+        for (j = 1; j <= nc; j++) { w[j] = length(h[j]); for (i = 1; i <= m; i++) if (length(F[i,j]) > w[j]) w[j] = length(F[i,j]) }
+        line = ""; for (j = 1; j <= nc; j++) line = line (j > 1 ? "  " : "") (j < nc ? sprintf("%-" w[j] "s", h[j]) : h[j])
+        print bold(line)
+        for (i = 1; i <= m; i++) {
+            line = ""
+            for (j = 1; j <= nc; j++) {
+                c = (j == 3) ? scol(F[i,j]) : ""
+                if (j == 4 && F[i,j] != "0:0" && color) c = "\033[31m"
+                line = line (j > 1 ? "  " : "") (j < nc ? pad(F[i,j], w[j], c) : F[i,j])
+            }
+            print line
+        }
+    }' <<<"$data"
+}
+
+# ---------------------------------------------------------------- main
+case $MODE in
+    srun) do_srun ;;
+    acct) do_acct ;;
+    list)
+        if ((WATCH)); then
+            trap 'echo; exit 0' INT
+            while :; do
+                out=$(list_jobs)
+                clear
+                printf '%s   every %ss, Ctrl-C to stop\n\n%s\n' "$(date '+%H:%M:%S')" "$INTERVAL" "$out"
+                sleep "$INTERVAL"
+            done
+        else
+            list_jobs
+        fi ;;
+esac
