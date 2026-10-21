@@ -9,10 +9,11 @@ APP_INPUT=args
 cores=32 memory=128 storage=shm:200g time_limit=72
 
 TM_MODULE=turbomole               # module load turbomole[/<version>]
+TM_PURGE_MODULES=false
 tm_arch=smp tm_init=0 tm_env=0
 
 APP_LONG="arch:,init,env"
-APP_VARS="TM_MODULE tm_arch tm_init tm_prog tm_args"
+APP_VARS="TM_MODULE TM_PURGE_MODULES tm_arch tm_init tm_prog tm_args"
 
 app_usage() {
 cat >&2 <<EOF
@@ -35,6 +36,7 @@ app_option() {
 }
 
 app_setup() {
+    (( nodes == 1 )) || [[ $tm_arch == mpi ]] || die 'SMP supports one node per job'
     case $tm_arch in
         smp) APP_TASKS=threads ;;
         mpi) APP_TASKS=mpi ;;
@@ -42,7 +44,12 @@ app_setup() {
     esac
     if (( tm_env )); then
         echo "module load $TM_MODULE${version:+/$version}"
-        echo "export PARA_ARCH=${tm_arch^^} PARNODES=$((nodes*cores))"
+        local arch='' threads=1
+        if (( nodes*cores > 1 )); then
+            case $tm_arch in smp) arch=SMP ;; mpi) arch=MPI ;; esac
+        fi
+        [[ $tm_arch != smp ]] || threads=$cores
+        printf 'export PARA_ARCH=%q PARNODES=%q OMP_NUM_THREADS=%q\n' "$arch" "$((nodes*cores))" "$threads"
         echo 'source $TURBODIR/Config_turbo_env'
         exit 0
     fi
@@ -50,29 +57,37 @@ app_setup() {
 
 app_prepare() {
     tm_prog=${APP_ARGS[0]}
+    [[ $tm_prog =~ ^[[:alnum:]_][[:alnum:]_.+-]*$ ]] || die 'use a TURBOMOLE program name without a path'
     tm_args=("${APP_ARGS[@]:1}")
     base="$(basename "$PWD")_$tm_prog"
     jobname="$QJOB_APP:${name:-$base}"
     case $tm_prog in
         x2t|t2x|define|cpc) ;;
-        *) [ -f control ] || warn "no 'control' file in $PWD" ;;
+        *) [ -f control ] || die "no 'control' file in $PWD" ;;
     esac
     return 0
 }
 
 app_run() {
+    [[ $TM_PURGE_MODULES != true ]] || module purge || return 1
     module load "$TM_MODULE${version:+/$version}" || return 1
     [ -n "${TURBODIR:-}" ] || { qjob_msg "TURBODIR not set by module $TM_MODULE"; return 1; }
     local np=$((nodes*cores)) log=$base.log scf rc
+    # Clear parallel settings inherited from modules or the submitting shell.
+    export PARA_ARCH='' PARNODES=$np OMP_NUM_THREADS=1
+    unset HOSTS_FILE
     if (( np > 1 )); then
-        export PARA_ARCH=${tm_arch^^} PARNODES=$np OMP_NUM_THREADS=$cores
+        case $tm_arch in smp) export PARA_ARCH=SMP ;; mpi) export PARA_ARCH=MPI ;; esac
+        [[ $tm_arch != smp ]] || export OMP_NUM_THREADS=$cores
         if [ "$tm_arch" = mpi ] && [ -n "${SLURM_JOB_NODELIST:-}" ]; then
             export HOSTS_FILE=$TMPDIR/hosts
             scontrol show hostnames "$SLURM_JOB_NODELIST" \
                 | awk -v n="$cores" '{for(i=0;i<n;i++) print}' > "$HOSTS_FILE"
         fi
     fi
-    [ -f "$TURBODIR/Config_turbo_env" ] && source "$TURBODIR/Config_turbo_env"
+    [[ -r $TURBODIR/Config_turbo_env ]] || { qjob_msg 'Config_turbo_env not found'; return 1; }
+    source "$TURBODIR/Config_turbo_env" || return 1
+    command -v "$tm_prog" >/dev/null || { qjob_msg "program not found: $tm_prog"; return 1; }
     export TURBOTMPDIR=$TMPDIR
     ulimit -s unlimited 2>/dev/null
     cd "$SLURM_SUBMIT_DIR" || return 1
@@ -90,7 +105,6 @@ app_run() {
     qjob_msg "-- running $tm_prog ${tm_args[*]}  (PARA_ARCH=${PARA_ARCH:-serial} PARNODES=${PARNODES:-1})"
     "$tm_prog" "${tm_args[@]}" > "$log" 2>&1
     rc=$?
-    [ $rc -eq 0 ] && rm -f CC*            # ricc2 scratch left in the working dir
     qjob_msg "-- $tm_prog exit status $rc"
     return $rc
 }
