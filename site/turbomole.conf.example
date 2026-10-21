@@ -1,0 +1,9 @@
+# Site defaults for the EasyBuild Linux installation.
+TM_MODULE=TURBOMOLE
+version=8.0.1
+TM_PURGE_MODULES=true
+cores=4
+memory=8
+time_limit=24
+storage=''
+tm_arch=smp
