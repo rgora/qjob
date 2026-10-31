@@ -1,0 +1,10 @@
+{
+  "coordinator": "bose",
+  "shared_root": "/shared",
+  "interval": 20,
+  "targets": [
+    {"host": "bohr", "cores": 32, "memory_gb": 488},
+    {"host": "bose", "cores": 32, "memory_gb": 488},
+    {"host": "ligol", "cores": 8, "memory_gb": 175}
+  ]
+}
