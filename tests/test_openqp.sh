@@ -80,4 +80,14 @@ grep -q failed "$failed/stderr.log"
 if "$root/bin/Openqp" --debug -n 2 water.inp >/dev/null 2>&1; then echo 'Expected multi-node rejection'; exit 1; fi
 printf bad > bad.py
 if "$root/bin/Openqp" --debug bad.py >/dev/null 2>&1; then echo 'Expected unsupported input rejection'; exit 1; fi
+printf '\nOPENQP_MPI_AVAILABLE=false\n' >> "$QJOB_CONFIG_DIR/openqp.conf"
+if "$root/bin/Openqp" --debug --mpi water.inp > unsupported-mpi.out 2>unsupported-mpi.err; then
+    echo 'Expected MPI-disabled build rejection'; exit 1
+fi
+grep -q 'does not support MPI' unsupported-mpi.err
+QJOB_PROFILE=wcss "$root/bin/Openqp" --debug water.inp > wcss-openqp.sh
+grep -q 'OPENQP_MPI_AVAILABLE="false"' wcss-openqp.sh
+if QJOB_PROFILE=wcss "$root/bin/Openqp" --debug --mpi water.inp >/dev/null 2>&1; then
+    echo 'Expected WCSS MPI-disabled build rejection'; exit 1
+fi
 echo 'PASS: OpenQP allocation, MPI/OpenMP, unchanged inputs, isolated results, auxiliary inputs and failure retention'
