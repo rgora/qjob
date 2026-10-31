@@ -106,4 +106,3 @@ Oba zadania mają `COMPLETED`, `ExitCode=0:0` i komunikat
 `/shared/rgora/qjob-global-validation-20261020`. Potwierdzono też pozostawienie
 zadania w globalnej kolejce oczekującej i jego anulowanie przed przekazaniem.
 Pozostałe konta wymagają własnej instancji usługi i dostępu SSH.
-

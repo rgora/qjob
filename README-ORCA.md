@@ -137,5 +137,3 @@ wyników. Brak pliku oznacza, że zakończenie nie zostało jeszcze zapisane (np
 proces nadal działa albo został przerwany). Bez `--background` profil lokalny
 wykonuje zadanie na pierwszym planie. Lokalnie `-m` i `-t` nie ustanawiają limitów
 systemowych; `-m` jest używane do kontroli zadeklarowanego `%maxcore`.
-
-
