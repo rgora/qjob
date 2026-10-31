@@ -1,0 +1,5 @@
+# /etc/qjob/gaussian.conf or ~/.config/qjob/gaussian.conf
+GAUSSIAN_ROOT=/opt/gaussian
+# For a module installation (e.g. ligol), replace the settings above with:
+# GAUSSIAN_MODULE=Gaussian
+# GAUSSIAN_MODULE_VERSION=16.C.01-NVHPC-21.3

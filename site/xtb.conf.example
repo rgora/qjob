@@ -1,0 +1,3 @@
+version=6.7.1-gfbf-2025b
+CHEM_MODULE=xtb
+CHEM_PURGE_MODULES=true
