@@ -1,0 +1,10 @@
+# A CUDA site with Slurm GPU GRES; select its GPU partition in qjob.conf.
+cores=4 memory=8 time_limit=24
+version=2026.2-foss-2025b-CUDA-12.9.1
+GROMACS_MODULE=GROMACS
+GROMACS_MODE=gpu
+GROMACS_PURGE_MODULES=true
+GROMACS_GPU_GRES=gpu:1
+# For a single-GPU host without GPU GRES, require an exclusive node instead:
+# GROMACS_GPU_GRES=''
+# GROMACS_GPU_EXCLUSIVE=true

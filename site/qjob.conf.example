@@ -1,0 +1,13 @@
+# Install as /etc/qjob/qjob.conf; use the correct partition for each host.
+QJOB_SITE=bohr
+partition=normal              # normal on bohr; bose on bose; ligol on ligol
+nodes=1
+QJOB_MAX_NODES=1
+QJOB_SLURM_HINT=nomultithread  # request physical cores, without SMT siblings
+QJOB_MAX_CORES=32             # physical cores: 32 on bohr/bose; 16 in Slurm on ligol
+QJOB_MAX_MEMORY=488           # integer GB: 488 on bohr/bose; 175 on ligol
+QJOB_SCRATCH_ROOT=/scratch/qjob
+QJOB_MODULEPATH=/opt/easybuild/modules/all
+QJOB_STORAGE_GRES=false       # this Slurm setup has no storage GRES
+storage=''
+clean_tmp=success             # retain scratch on application/copy-back failure
