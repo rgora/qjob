@@ -1,0 +1,6 @@
+# /etc/qjob/gromacs.conf on a CPU host, or ~/.config/qjob/gromacs.conf.
+cores=4 memory=8 time_limit=24
+version=2026.2-foss-2025b
+GROMACS_MODULE=GROMACS
+GROMACS_MODE=cpu
+GROMACS_PURGE_MODULES=true

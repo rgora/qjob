@@ -1,0 +1,9 @@
+# Shared by all users; CLI options override these defaults.
+# Install as /etc/qjob/orca.conf, owned by root, mode 0644.
+cores=4
+memory=8                      # GB per node (not MB per ORCA process)
+time_limit=24                 # hours
+version=6.1.1
+ORCA_MODULE_TEMPLATE='ORCA/%v-gompi-2023b-avx2'
+ORCA_PURGE_MODULES=true
+ORCA_BIND_ALLOCATION=true
