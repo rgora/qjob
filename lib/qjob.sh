@@ -14,10 +14,11 @@
 # so no escaping of \$ is needed anywhere; '--debug' prints the complete script.
 # =============================================================================
 
-QJOB_ROOT=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd)
+QJOB_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 QJOB_APP=${1:?usage: qjob.sh <app> [options] inputs}; shift
 QJOB_CMD=${QJOB_CMD:-$QJOB_APP}
 QJOB_ARGS=$(printf '%q ' "$@")
+QJOB_ORIGINAL_ARGS=("$@")
 
 red=$'\e[1;31m' blu=$'\e[1;34m' end=$'\e[0m'
 [ -t 2 ] || red='' blu='' end=''
@@ -29,8 +30,13 @@ if id -nG 2>/dev/null | grep -qw plgrid; then partition=plgrid-lem-cpu; else par
 nodes=1 cores=8 memory=16 time_limit=1 storage=shm:40g gres=""
 nodelist="" account="" qos="" mail="" reservation="" exclusive=0 slurmopt=""
 name="" version="" copy="" copy_back="" clean_tmp=false
-debug=0 run_local=0 show_help=0
+debug=0 run_local=0 background=0 show_help=0
 signal_lead=300        # s before the time limit: USR1 -> copy-back of current results
+QJOB_SITE=WCSS
+QJOB_SCRATCH_ROOT="" QJOB_MODULEPATH="" QJOB_MODULE_INIT="" QJOB_STORAGE_GRES=true
+QJOB_MAX_NODES=0 QJOB_MAX_CORES=0 QJOB_MAX_MEMORY=0
+QJOB_SLURM_HINT=""
+QJOB_DISPATCH_HOST=""
 
 # ------------------------------------------------------------ application hooks
 APP_SYNOPSIS="input [input2 ...]"
@@ -48,13 +54,35 @@ app_run()     { :; }          # job body (runs inside the job)
 # shellcheck source=/dev/null
 source "$QJOB_ROOT/apps/$QJOB_APP.sh"     # may override the defaults above
 
+# Site defaults belong outside the Git checkout. Named profiles and user
+# preferences can override defaults; the CLI is applied last.
+QJOB_CONFIG_DIR=${QJOB_CONFIG_DIR:-/etc/qjob}
+config_files=("$QJOB_CONFIG_DIR/qjob.conf" "$QJOB_CONFIG_DIR/$QJOB_APP.conf")
+if [ -z "${QJOB_PROFILE:-}" ] && [[ $OSTYPE == darwin* ]] && [ ! -f "$QJOB_CONFIG_DIR/qjob.conf" ]; then
+    QJOB_PROFILE=local
+fi
+if [ -n "${QJOB_PROFILE:-}" ]; then
+    [[ $QJOB_PROFILE =~ ^[a-zA-Z0-9_-]+$ ]] || die "invalid profile name: $QJOB_PROFILE"
+    [ -d "$QJOB_ROOT/profiles/$QJOB_PROFILE" ] || die "unknown profile: $QJOB_PROFILE"
+    config_files+=("$QJOB_ROOT/profiles/$QJOB_PROFILE/qjob.conf" "$QJOB_ROOT/profiles/$QJOB_PROFILE/$QJOB_APP.conf")
+fi
+QJOB_USER_CONFIG_DIR=${QJOB_USER_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/qjob}
+config_files+=("$QJOB_USER_CONFIG_DIR/qjob.conf" "$QJOB_USER_CONFIG_DIR/$QJOB_APP.conf")
+for config in "${config_files[@]}"; do
+    if [ -f "$config" ]; then
+        [ -r "$config" ] || die "configuration is not readable: $config"
+        source "$config" || die "could not load configuration: $config"
+    fi
+done
+
 usage() {
 cat >&2 <<EOF
-${blu}$QJOB_CMD${end} (qjob @ WCSS)
+${blu}$QJOB_CMD${end} (qjob @ $QJOB_SITE)
 Usage: $QJOB_CMD [options] $APP_SYNOPSIS
 
 Resources                                              [default]
   -p, --partition NAME     partition                    [$partition]
+                           global: dispatch through the configured coordinator
   -n, --nodes N            nodes                        [$nodes]
   -c, --cores N            cores per node               [$cores]
   -m, --memory GB          memory per node (integer)    [$memory]
@@ -75,6 +103,7 @@ Other
   -v, --version VER        module version                         [${version:-default}]
       --name NAME          job name (default: input file name)
       --local              run here without Slurm (e.g. in an interactive allocation)
+      --background         run locally in the background; print PID and job-log path
       --debug              print the job script, do not submit
   -h, --help
 EOF
@@ -83,18 +112,22 @@ app_usage
 
 # ------------------------------------------------------------ options
 SHORT="+hp:n:c:m:t:s:w:A:q:C:B:v:${APP_SHORT}"
-LONG="help,debug,local,partition:,nodes:,cores:,memory:,time:,storage:,gres:,nodelist:"
+LONG="help,debug,local,background,partition:,nodes:,cores:,memory:,time:,storage:,gres:,nodelist:"
 LONG+=",account:,qos:,reservation:,exclusive,mail:,slurmopt:,copy:,copy-back:,clean-tmp:"
 LONG+=",version:,name:${APP_LONG:+,$APP_LONG}"
-PARSED=$(getopt -o "$SHORT" -l "$LONG" -n "$QJOB_CMD" -- "$@") || { echo "Try '$QJOB_CMD -h'." >&2; exit 2; }
+source "$QJOB_ROOT/lib/options.sh"
+PARSED=$(qjob_parse_options "$SHORT" "$LONG" "$@") || { echo "Try '$QJOB_CMD -h'." >&2; exit 2; }
 eval set -- "$PARSED"
 while :; do
     case $1 in
         -h|--help)      show_help=1; shift ;;
         --debug)        debug=1; shift ;;
         --local)        run_local=1; shift ;;
+        --background)   run_local=1; background=1; shift ;;
         --exclusive)    exclusive=1; shift ;;
-        -p|--partition) partition=$2; shift 2 ;;
+        -p|--partition)
+            if [[ $2 != global || ${QJOB_DISPATCH_TARGET:-0} != 1 ]]; then partition=$2; fi
+            shift 2 ;;
         -n|--nodes)     nodes=$2; shift 2 ;;
         -c|--cores)     cores=$2; shift 2 ;;
         -m|--memory)    memory=$2; shift 2 ;;
@@ -120,29 +153,61 @@ while :; do
 done
 
 if (( show_help )); then usage; exit 0; fi
-app_setup
 [ $# -gt 0 ] || { usage; exit 1; }
+
+# Dispatch before local site limits: a request can fit a different machine.
+if [[ $partition == global ]]; then
+    [[ ${QJOB_DISPATCH_TARGET:-0} != 1 ]] || die "target default partition cannot be global"
+    [[ $APP_INPUT == file ]] || die "global currently supports file-based applications only"
+    (( ! run_local )) || die "global cannot be combined with --local/--background"
+    [[ -n $QJOB_DISPATCH_HOST ]] || die "global dispatcher is not configured at this site"
+    command -v python3 >/dev/null || die "global requires python3"
+    dispatch_mode=submit
+    (( ! debug )) || dispatch_mode=preview
+    exec python3 "$QJOB_ROOT/libexec/global.py" "$dispatch_mode" \
+        --host "$QJOB_DISPATCH_HOST" --app "$QJOB_APP" --cwd "$PWD" \
+        --cores "$cores" --memory "$memory" --nodes "$nodes" --time "$time_limit" \
+        --input-count "$#" \
+        -- "${QJOB_ORIGINAL_ARGS[@]}"
+fi
 
 # ------------------------------------------------------------ checks
 for v in nodes cores memory; do
-    [[ ${!v} =~ ^[0-9]+$ ]] || die "--$v must be an integer (got '${!v}')"
+    [[ ${!v} =~ ^[1-9][0-9]*$ ]] || die "--$v must be a positive integer (got '${!v}')"
+done
+app_setup
+(( ! run_local || nodes == 1 )) || die "--local runs on one machine only"
+for v in NODES CORES MEMORY; do
+    limit_var=QJOB_MAX_$v
+    [[ ${!limit_var} =~ ^[0-9]+$ ]] || die "invalid site limit $limit_var"
+    resource=$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')
+    (( ${!limit_var} == 0 || ${!resource} <= ${!limit_var} )) \
+        || die "--$resource exceeds the site limit (${!limit_var})"
 done
 if [[ $time_limit =~ ^[0-9]+$ ]]; then wall="$time_limit:00:00"; else wall=$time_limit; fi
 [ -z "$storage" ] || [[ $storage =~ ^(shm|local|lustre):[0-9]+[kKmMgGtT]?[bB]?$ ]] \
     || die "--storage must be shm|local|lustre:<size>, e.g. shm:200g"
 [[ $clean_tmp =~ ^(false|success|always)$ ]] || die "--clean-tmp must be false|success|always"
 [ "$APP_TASKS" = threads ] && (( nodes > 1 )) && die "$QJOB_APP in this mode runs on one node only"
-gres_all=${storage:+storage:$storage}
+if [ -n "$QJOB_SCRATCH_ROOT" ] && [ -n "$storage" ] && [[ $storage != local:* ]]; then
+    die "this site uses local scratch; use --storage local:<size> or omit --storage"
+fi
+gres_all=""
+[ "$QJOB_STORAGE_GRES" != true ] || gres_all=${storage:+storage:$storage}
 gres_all=${gres_all}${gres:+${gres_all:+,}$gres}
 
 # ------------------------------------------------------------ job script
 QJOB_VARS="QJOB_APP QJOB_CMD jobname input base nodes cores memory version copy copy_back clean_tmp run_local"
+QJOB_VARS+=" QJOB_SCRATCH_ROOT QJOB_MODULEPATH QJOB_MODULE_INIT"
 
 make_script() {
+    local quoted_jobname=${jobname//\\/\\\\}
+    quoted_jobname=${quoted_jobname//\"/\\\"}
     echo '#!/bin/bash'
-    echo "#SBATCH -J $jobname"
+    printf '#SBATCH --job-name="%s"\n' "$quoted_jobname"
     echo "#SBATCH -p $partition"
     echo "#SBATCH -N $nodes"
+    [ -z "$QJOB_SLURM_HINT" ] || echo "#SBATCH --hint=$QJOB_SLURM_HINT"
     if [ "$APP_TASKS" = mpi ]; then
         echo "#SBATCH --ntasks-per-node=$cores"
     else
@@ -172,17 +237,34 @@ make_script() {
 
 submit() {             # uses $input, $base, cwd
     jobname="$QJOB_APP:${name:-${input:-$base}}"
+    local value
+    for value in "$jobname" "$partition" "$wall" "$nodelist" "$account" "$qos" "$reservation" "$mail" "$gres_all" "$slurmopt" "$QJOB_SLURM_HINT"; do
+        [[ $value != *$'\n'* && $value != *$'\r'* ]] || die "newlines are not allowed in Slurm options or job names"
+    done
     app_prepare || return 1
     copy=${copy_t//%b/$base} copy_back=${copy_back_t//%b/$base}
     local script; script=$(make_script)
     if (( debug )); then
         printf '%s\n' "$script"
     elif (( run_local )); then
-        local f; f=$(mktemp "${TMPDIR:-/tmp}/qjob.XXXXXX.sh")
+        local f; f=$(mktemp "${TMPDIR:-/tmp}/qjob.XXXXXX") || return 1
         printf '%s\n' "$script" > "$f"
-        bash "$f"; local rc=$?
-        rm -f "$f"; return $rc
+        if (( background )); then
+            local job_log pid
+            job_log=$(mktemp "$PWD/$base-local.XXXXXX") || { rm -f "$f"; return 1; }
+            mv -- "$job_log" "$job_log.log" || { rm -f "$f"; return 1; }
+            job_log=$job_log.log
+            nohup bash -c 'bash "$1"; rc=$?; printf "%s\n" "$rc" > "$2.exit-code"; rm -f -- "$1"; exit "$rc"' \
+                qjob-background "$f" "$job_log" > "$job_log" 2>&1 < /dev/null &
+            pid=$!
+            printf 'Started local job PID %s\nJob log: %s\nExit code: %s.exit-code\n' "$pid" "$job_log" "$job_log"
+        else
+            bash "$f"; local rc=$?
+            rm -f "$f"; return $rc
+        fi
     else
+        command -v sbatch >/dev/null 2>&1 \
+            || { warn "sbatch not found; use --local or QJOB_PROFILE=local"; return 1; }
         printf '%s\n' "${blu}$jobname${end}  $partition  ${nodes}x${cores} cores  ${memory} GB  ${wall}  ${gres_all}" >&2
         printf '%s\n' "$script" | sbatch
     fi

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Resolve the public symlink without GNU readlink -f (also works on macOS).
+script=$0
+while [ -L "$script" ]; do
+    directory=$(cd -P -- "$(dirname -- "$script")" && pwd) || exit 1
+    script=$(readlink "$script") || exit 1
+    [[ $script == /* ]] || script=$directory/$script
+done
+directory=$(cd -P -- "$(dirname -- "$script")" && pwd) || exit 1
+QJOB_CMD=$(basename "$0") exec "$directory/../lib/qjob.sh" cp2k "$@"

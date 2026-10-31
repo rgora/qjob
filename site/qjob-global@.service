@@ -1,0 +1,19 @@
+[Unit]
+Description=Qjob global dispatch queue for %i
+Wants=network-online.target
+After=network-online.target munge.service
+RequiresMountsFor=/shared /home/%i
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/%i
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /opt/qjob/libexec/global.py worker
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
