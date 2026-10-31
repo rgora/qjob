@@ -18,6 +18,7 @@ QJOB_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 QJOB_APP=${1:?usage: qjob.sh <app> [options] inputs}; shift
 QJOB_CMD=${QJOB_CMD:-$QJOB_APP}
 QJOB_ARGS=$(printf '%q ' "$@")
+QJOB_ORIGINAL_ARGS=("$@")
 
 red=$'\e[1;31m' blu=$'\e[1;34m' end=$'\e[0m'
 [ -t 2 ] || red='' blu='' end=''
@@ -35,6 +36,7 @@ QJOB_SITE=WCSS
 QJOB_SCRATCH_ROOT="" QJOB_MODULEPATH="" QJOB_MODULE_INIT="" QJOB_STORAGE_GRES=true
 QJOB_MAX_NODES=0 QJOB_MAX_CORES=0 QJOB_MAX_MEMORY=0
 QJOB_SLURM_HINT=""
+QJOB_DISPATCH_HOST=""
 
 # ------------------------------------------------------------ application hooks
 APP_SYNOPSIS="input [input2 ...]"
@@ -80,6 +82,7 @@ Usage: $QJOB_CMD [options] $APP_SYNOPSIS
 
 Resources                                              [default]
   -p, --partition NAME     partition                    [$partition]
+                           global: dispatch through the configured coordinator
   -n, --nodes N            nodes                        [$nodes]
   -c, --cores N            cores per node               [$cores]
   -m, --memory GB          memory per node (integer)    [$memory]
@@ -122,7 +125,9 @@ while :; do
         --local)        run_local=1; shift ;;
         --background)   run_local=1; background=1; shift ;;
         --exclusive)    exclusive=1; shift ;;
-        -p|--partition) partition=$2; shift 2 ;;
+        -p|--partition)
+            if [[ $2 != global || ${QJOB_DISPATCH_TARGET:-0} != 1 ]]; then partition=$2; fi
+            shift 2 ;;
         -n|--nodes)     nodes=$2; shift 2 ;;
         -c|--cores)     cores=$2; shift 2 ;;
         -m|--memory)    memory=$2; shift 2 ;;
@@ -149,6 +154,22 @@ done
 
 if (( show_help )); then usage; exit 0; fi
 [ $# -gt 0 ] || { usage; exit 1; }
+
+# Dispatch before local site limits: a request can fit a different machine.
+if [[ $partition == global ]]; then
+    [[ ${QJOB_DISPATCH_TARGET:-0} != 1 ]] || die "target default partition cannot be global"
+    [[ $APP_INPUT == file ]] || die "global currently supports file-based applications only"
+    (( ! run_local )) || die "global cannot be combined with --local/--background"
+    [[ -n $QJOB_DISPATCH_HOST ]] || die "global dispatcher is not configured at this site"
+    command -v python3 >/dev/null || die "global requires python3"
+    dispatch_mode=submit
+    (( ! debug )) || dispatch_mode=preview
+    exec python3 "$QJOB_ROOT/libexec/global.py" "$dispatch_mode" \
+        --host "$QJOB_DISPATCH_HOST" --app "$QJOB_APP" --cwd "$PWD" \
+        --cores "$cores" --memory "$memory" --nodes "$nodes" --time "$time_limit" \
+        --input-count "$#" \
+        -- "${QJOB_ORIGINAL_ARGS[@]}"
+fi
 
 # ------------------------------------------------------------ checks
 for v in nodes cores memory; do
