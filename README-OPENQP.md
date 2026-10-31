@@ -29,4 +29,3 @@ Instalacja dodatku w istniejącym `/opt/qjob`: `sudo bash site/install-openqp.sh
 Ustawienia aplikacji znajdują się w `/etc/qjob/openqp.conf`, a osobiste ustawienia
 w `~/.config/qjob/openqp.conf`. Instalator zachowuje istniejącą konfigurację.
 Testy bez OpenQP i Slurma: `bash tests/test_openqp.sh`.
-

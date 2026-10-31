@@ -22,4 +22,3 @@ stdout przebiegu trafia do `<wejście>-<jobid>.log`.
 
 W zadaniach Slurm: 300 s przed limitem czasu zadanie dostaje USR1 i kopiuje pliki
 z `--copy-back` (np. aktualny `.gbw`) do katalogu zadania; potem wykonuje się normalny epilog.
-
