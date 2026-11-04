@@ -9,8 +9,9 @@ BAGEL_BINARY=''
 BAGEL_PURGE_MODULES=true
 BAGEL_MODE=mpi
 BAGEL_MPI_ARGS=()
+BAGEL_BIND=none
 APP_LONG='mpi,openmp'
-APP_VARS='BAGEL_MODULE BAGEL_MODULE_TEMPLATE BAGEL_BINARY BAGEL_PURGE_MODULES BAGEL_MODE BAGEL_MPI_ARGS'
+APP_VARS='BAGEL_MODULE BAGEL_MODULE_TEMPLATE BAGEL_BINARY BAGEL_PURGE_MODULES BAGEL_MODE BAGEL_MPI_ARGS BAGEL_BIND'
 
 app_usage() {
 cat >&2 <<EOF
@@ -67,7 +68,7 @@ app_run() {
     threads=$cores
     if [[ $BAGEL_MODE == mpi ]]; then
         threads=1
-        command_line=(mpirun "${BAGEL_MPI_ARGS[@]}" --bind-to core -np "$cores" "$bagel_bin" "$input")
+        command_line=(mpirun "${BAGEL_MPI_ARGS[@]}" --bind-to "$BAGEL_BIND" -np "$cores" "$bagel_bin" "$input")
     else
         command_line=(mpirun "${BAGEL_MPI_ARGS[@]}" --bind-to none -np 1 "$bagel_bin" "$input")
     fi
