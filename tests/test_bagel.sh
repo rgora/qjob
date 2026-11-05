@@ -31,7 +31,7 @@ cat > "$test_dir/bin/mpirun" <<'MOCK'
 #!/bin/bash
 printf '%s\n' "$@" > "$QJOB_TEST_DIR/mpi-args"
 [[ $1 == --bind-to && $3 == -np ]] || exit 10
-[[ $2 == core && $4 == 2 || $2 == none && $4 == 1 ]] || exit 11
+[[ $2 == "${QJOB_TEST_EXPECTED_BIND:-none}" && $4 == 2 || $2 == none && $4 == 1 ]] || exit 11
 shift 4
 exec "$@"
 MOCK
@@ -55,6 +55,12 @@ result=$(find . -maxdepth 1 -type d -name 'hf-qjob-*' | head -1)
 [[ -f $result/saved.archive ]]
 grep -q converged "$result/stdout.log"
 grep -q 'load BAGEL/1.2.2-foss-2025b' "$QJOB_TEST_DIR/modules"
+# MPI defaults to no binding, but site configuration can request core binding.
+[[ $(sed -n '2p' "$QJOB_TEST_DIR/mpi-args") == none ]]
+printf '\nBAGEL_BIND=core\n' >> "$QJOB_CONFIG_DIR/bagel.conf"
+QJOB_TEST_EXPECTED_BIND=core "$root/bin/Bagel" --local -c 2 -C restart.archive hf.json > binding.out 2>binding.err
+[[ $(sed -n '2p' "$QJOB_TEST_DIR/mpi-args") == core ]]
+printf '\nBAGEL_BIND=none\n' >> "$QJOB_CONFIG_DIR/bagel.conf"
 "$root/bin/Bagel" --local --openmp -c 3 -C restart.archive hf.json > threads.out 2>threads.err
 [[ $(cat "$QJOB_TEST_DIR/threads") == '3 3 3 3' ]]
 printf fail-test > failure.json
@@ -68,4 +74,4 @@ QJOB_PROFILE=wcss "$root/bin/Bagel" --debug hf.json > wcss.sh
 grep -q '1.2.2-foss-2021a' wcss.sh
 grep -q '^#SBATCH -p lem-cpu-short$' wcss.sh
 grep -q '/usr/local/sbin/modules.sh' wcss.sh
-echo 'PASS: BAGEL MPI/threads allocation, auxiliary inputs, isolated results, failure propagation, scratch retention and WCSS profile'
+echo 'PASS: BAGEL MPI binding, MPI/threads allocation, auxiliary inputs, isolated results, failure propagation, scratch retention and WCSS profile'
